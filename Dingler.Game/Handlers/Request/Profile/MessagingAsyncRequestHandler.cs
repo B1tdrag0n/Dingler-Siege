@@ -1,23 +1,34 @@
 extern alias HexGame;
-using System.Collections;
-using System.Reflection;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dingler.Server;
 using Dingler.Server.Abstractions;
 using Dingler.Server.Attributes;
 using HexGame::Game.Shared.Campaign.Siege;
-using HexGame::Game.Shared.Network;
+using HexGame::Game.Shared.Domain;
 using Microsoft.Extensions.Logging;
 
 namespace Dingler.Game.Handlers.Request.Profile;
 
-// Siege (Milestone 1): we don't know the wire shape of Messaging.Request yet, so this only logs every field of each
-// request it receives, without guessing field names. It still sends no reply, so the Siege screens keep waiting.
+// Siege, DataType 150000. Every Siege call is a Messaging.Request whose Envelope is UTF-8 JSON naming the operation in
+// "RequestType". The reply is a Messaging.Response whose Envelope is the JSON of that operation's Response class; the
+// client matches it to its request by request id, so the reply carries no RequestType. See notes/siege-protocol.md.
+// Returning null sends nothing, which leaves the client waiting, so only operations we can answer return a response.
 [Authenticated]
-public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Request>
+public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Request, Messaging.Response?>
 {
-	private const int MaxDepth = 4;
-	private const int MaxBytesShown = 256;
+	// Fee rules from the client's rules text: 1000 gold / 50 platinum minimum bounty, attacking costs 40% of the
+	// bounty, and of that fee 50% goes to the defender and 37.5% is added to the bounty (the rest is burned).
+	private static readonly Messaging.FeeDetail Fees = new(1000, 50, 0.4f, 0.5f, 0.375f);
+
+	// The client reads replies with Newtonsoft.Json: public fields, exact field names, and enums as names or numbers.
+	// (The game DLL's own Newtonsoft copy can read here but fails to write outside Unity, so we write with System.Text.Json.)
+	private static readonly JsonSerializerOptions JsonOptions = new()
+	{
+		IncludeFields = true,
+		Converters = { new JsonStringEnumConverter() }
+	};
 
 	private readonly ILogger<MessagingAsyncRequestHandler>? _logger;
 
@@ -26,91 +37,70 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 		_logger = logger;
 	}
 
-	public void HandleRequest(SessionContext context, Messaging.Request request)
+	public Messaging.Response? HandleRequest(SessionContext context, Messaging.Request request)
 	{
 		try
 		{
-			var dump = new StringBuilder();
-			Describe(dump, "request", request, 0);
-			_logger?.LogInformation("Siege: request from {user}\n{dump}", context.UserName, dump.ToString());
+			var json = Encoding.UTF8.GetString(request.Envelope ?? []);
+			var requestType = ReadRequestType(json);
+			_logger?.LogDebug("Siege: {type} from {user}: {json}", requestType, context.UserName, json);
+
+			object? reply = requestType switch
+			{
+				Messaging.ReqType_FeeInfo => FeeInfo(),
+				Messaging.ReqType_QueryStatus_ActiveForUser => Query(Read<QueryRequest>(json)),
+				Messaging.ReqType_QueryUserListing => UserListing(Read<UserListingRequest>(json)),
+				_ => null
+			};
+
+			if (reply is null)
+			{
+				_logger?.LogWarning("Siege: {type} from {user} is not implemented yet, sending no reply", requestType,
+					context.UserName);
+				return null;
+			}
+
+			return new Messaging.Response { Envelope = JsonSerializer.SerializeToUtf8Bytes(reply, reply.GetType(), JsonOptions) };
 		}
 		catch (Exception ex)
 		{
-			_logger?.LogError(ex, "Siege: failed to log request from {user}", context.UserName);
+			_logger?.LogError(ex, "Siege: failed to handle request from {user}", context.UserName);
+			return null;
 		}
 	}
 
-	// Writes one line per field, recursing into nested objects, lists and byte arrays.
-	private static void Describe(StringBuilder dump, string name, object? value, int depth)
+	private static Messaging.FeeInfo.Response FeeInfo() => new() { Detail = Fees };
+
+	// The public defender list on the Attack screen. Nobody can commit a defense yet, so it is always empty.
+	private static Messaging.Query.Response Query(QueryRequest request) => new()
 	{
-		var indent = new string(' ', depth * 2);
+		QuerySort = request.Sorting ?? [],
+		QueryOffset = request.Offset,
+		QueryCount = request.Count,
+		Results = []
+	};
 
-		if (value is null)
-		{
-			dump.AppendLine($"{indent}{name} = null");
-			return;
-		}
-
-		var type = value.GetType();
-
-		if (value is byte[] bytes)
-		{
-			DescribeBytes(dump, indent, name, bytes, depth);
-			return;
-		}
-
-		if (type.IsPrimitive || type.IsEnum || value is string or decimal or DateTime or Guid)
-		{
-			dump.AppendLine($"{indent}{name} = {value} ({type.Name})");
-			return;
-		}
-
-		if (depth >= MaxDepth)
-		{
-			dump.AppendLine($"{indent}{name} = ({type.FullName}, too deep to show)");
-			return;
-		}
-
-		if (value is IEnumerable items)
-		{
-			dump.AppendLine($"{indent}{name} ({type.Name}):");
-			var index = 0;
-			foreach (var item in items)
-				Describe(dump, $"[{index++}]", item, depth + 1);
-			return;
-		}
-
-		dump.AppendLine($"{indent}{name} ({type.FullName}):");
-		const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-
-		foreach (var field in type.GetFields(flags))
-			Describe(dump, field.Name, field.GetValue(value), depth + 1);
-
-		foreach (var property in type.GetProperties(flags))
-		{
-			if (property.GetIndexParameters().Length > 0 || !property.CanRead)
-				continue;
-			Describe(dump, property.Name, property.GetValue(value), depth + 1);
-		}
-	}
-
-	// A byte array could be the packed envelope, so show its raw bytes and try the two likeliest ways to read it.
-	private static void DescribeBytes(StringBuilder dump, string indent, string name, byte[] bytes, int depth)
+	// The player's own defenses for the Defense screen. The client loops over Results without a null check.
+	private static Messaging.UserListing.Response UserListing(UserListingRequest request) => new()
 	{
-		var shown = bytes.AsSpan(0, Math.Min(bytes.Length, MaxBytesShown));
-		var more = bytes.Length > MaxBytesShown ? " ..." : "";
-		dump.AppendLine($"{indent}{name} = byte[{bytes.Length}]");
-		dump.AppendLine($"{indent}  hex:  {Convert.ToHexString(shown)}{more}");
-		dump.AppendLine($"{indent}  text: {Encoding.UTF8.GetString(shown)}{more}");
+		SiegeStatus = request.SiegeStatus,
+		Offset = request.Offset,
+		Count = request.Count,
+		Results = Array.Empty<siege_bits>()
+	};
 
-		try
-		{
-			var decoded = EncData.Decode(bytes);
-			Describe(dump, "as EncData", decoded, depth + 1);
-		}
-		catch (Exception ex)
-		{
-			dump.AppendLine($"{indent}  as EncData: not readable ({ex.GetType().Name})");
-		}
+	private static string? ReadRequestType(string json)
+	{
+		using var document = JsonDocument.Parse(json);
+		return document.RootElement.TryGetProperty("RequestType", out var type) ? type.GetString() : null;
 	}
+
+	private static T Read<T>(string json) =>
+		JsonSerializer.Deserialize<T>(json, JsonOptions) ?? throw new JsonException($"Empty {typeof(T).Name} envelope");
+
+	// Request shapes as the client writes them. The client's own classes only have constructors with differently named
+	// parameters, which System.Text.Json can't fill, so these mirror their fields instead.
+	private sealed record QueryRequest(Messaging.SortParam[]? Sorting, int Offset, int Count);
+
+	private sealed record UserListingRequest(Messaging.UserListing.Status SiegeStatus, int Offset, int Count, ulong DebugReckId);
 }
