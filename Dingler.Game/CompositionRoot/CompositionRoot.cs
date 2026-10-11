@@ -55,9 +55,6 @@ namespace Dingler.Game.CompositionRoot
                 sc.AddSingleton(arenaRunStore);
                 sc.AddSingleton<Dingler.Game.Arena.ArenaBattleService>();
 
-                // Siege defenses and their events log, in memory until Milestone 3 moves them into the database.
-                sc.AddSingleton<Dingler.Game.Siege.SiegeStore>();
-
                 // Deck import from the Hex Codex deck builder: the site's data folder (ids.json, gems.json) and the inbox.
                 sc.AddSingleton(new Dingler.Game.DeckImport.DeckImportOptions
                 {
@@ -93,6 +90,7 @@ namespace Dingler.Game.CompositionRoot
                     .AddScoped<AccountRepository>()
                     .AddScoped<PlayerProfileRepository>()
                     .AddScoped<FriendRepository>()
+                    .AddScoped<SiegeRepository>()
                     .AddScoped<DeckService>()
                     .AddScoped<Dingler.Game.DeckImport.DeckImportService>()
                     .AddScoped<GameManager>()

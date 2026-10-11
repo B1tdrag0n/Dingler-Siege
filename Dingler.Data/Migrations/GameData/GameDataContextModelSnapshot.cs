@@ -15,7 +15,7 @@ namespace Dingler.Data.Migrations.GameData
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.0");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
 
             modelBuilder.Entity("Dingler.Data.Entities.GameData.Account", b =>
                 {
@@ -340,6 +340,126 @@ namespace Dingler.Data.Migrations.GameData
                         });
                 });
 
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.Siege", b =>
+                {
+                    b.Property<ulong>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ChallengeCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ChallengeLimit")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("CloseDate")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("Created")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Currency")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FightInfo")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<DateTime?>("LastChallengeDate")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Loss")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PlayerName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<ulong>("PlayerProfileId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Pot")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("RequestClose")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("StatusDate")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Wins")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PlayerProfileId");
+
+                    b.HasIndex(new[] { "Status" }, "IX_Sieges_Status");
+
+                    b.ToTable("Sieges", (string)null);
+                });
+
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.SiegeLedger", b =>
+                {
+                    b.Property<ulong>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Action")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Bet")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Context")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("Created")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Escrow")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Fee")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("FightSeq")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("Forfeit")
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("PlayerDeck")
+                        .HasColumnType("BLOB");
+
+                    b.Property<string>("PlayerName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<ulong>("PlayerProfileId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Rake")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong>("SiegeId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Wins")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PlayerProfileId");
+
+                    b.HasIndex("SiegeId");
+
+                    b.ToTable("SiegeLedger", (string)null);
+                });
+
             modelBuilder.Entity("Dingler.Data.Entities.GameData.StartCondition", b =>
                 {
                     b.Property<int>("Id")
@@ -553,6 +673,36 @@ namespace Dingler.Data.Migrations.GameData
                     b.Navigation("Rank");
                 });
 
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.Siege", b =>
+                {
+                    b.HasOne("Dingler.Data.Entities.GameData.PlayerProfile", "PlayerProfile")
+                        .WithMany()
+                        .HasForeignKey("PlayerProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("PlayerProfile");
+                });
+
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.SiegeLedger", b =>
+                {
+                    b.HasOne("Dingler.Data.Entities.GameData.PlayerProfile", "PlayerProfile")
+                        .WithMany()
+                        .HasForeignKey("PlayerProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Dingler.Data.Entities.GameData.Siege", "Siege")
+                        .WithMany("Ledger")
+                        .HasForeignKey("SiegeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("PlayerProfile");
+
+                    b.Navigation("Siege");
+                });
+
             modelBuilder.Entity("Dingler.Data.Entities.GameData.Tournament", b =>
                 {
                     b.HasOne("Dingler.Data.Entities.GameData.MatchType", "MatchType")
@@ -612,6 +762,11 @@ namespace Dingler.Data.Migrations.GameData
             modelBuilder.Entity("Dingler.Data.Entities.GameData.Rank", b =>
                 {
                     b.Navigation("PlayerProfiles");
+                });
+
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.Siege", b =>
+                {
+                    b.Navigation("Ledger");
                 });
 
             modelBuilder.Entity("Dingler.Data.Entities.GameData.StartCondition", b =>

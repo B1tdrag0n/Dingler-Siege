@@ -23,6 +23,10 @@ public partial class GameDataContext : DbContext
     public virtual DbSet<PlayerProfile> PlayerProfiles { get; set; }
     public virtual DbSet<Tournament> Tournaments { get; set; }
 
+    public virtual DbSet<Siege> Sieges { get; set; }
+
+    public virtual DbSet<SiegeLedger> SiegeLedger { get; set; }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         if (!optionsBuilder.IsConfigured)
@@ -237,6 +241,33 @@ public partial class GameDataContext : DbContext
             entity.HasData(matchTypeLookups);
         });
         
+        modelBuilder.Entity<Siege>(entity =>
+        {
+            entity.ToTable("Sieges");
+
+            entity.HasIndex(e => e.Status, "IX_Sieges_Status");
+
+            entity.HasOne(e => e.PlayerProfile)
+                .WithMany()
+                .HasForeignKey(e => e.PlayerProfileId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SiegeLedger>(entity =>
+        {
+            entity.ToTable("SiegeLedger");
+
+            entity.HasOne(e => e.Siege)
+                .WithMany(s => s.Ledger)
+                .HasForeignKey(e => e.SiegeId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.PlayerProfile)
+                .WithMany()
+                .HasForeignKey(e => e.PlayerProfileId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
         OnModelCreatingPartial(modelBuilder);
     }
 

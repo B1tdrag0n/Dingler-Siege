@@ -3,7 +3,9 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Dingler.Game.Siege;
+using Dingler.Data.Entities.GameData;
+using Dingler.Data.Enums;
+using Dingler.Data.Repositories;
 using Dingler.Server;
 using Dingler.Server.Abstractions;
 using Dingler.Server.Attributes;
@@ -21,7 +23,7 @@ namespace Dingler.Game.Handlers.Request.Profile;
 // A refusal is an ErrorArgs instead of a Messaging.Response: the client hands its ErrorMessage to the screen's error
 // handler, which usually shows it in a popup. Every request gets one or the other, so no screen is left waiting.
 [Authenticated]
-public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Request, IRequestArgs>
+public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messaging.Request, IRequestArgs>
 {
 	// Fee rules from the client's rules text: 1000 gold / 50 platinum minimum bounty, attacking costs 40% of the
 	// bounty, and of that fee 50% goes to the defender and 37.5% is added to the bounty (the rest is burned).
@@ -46,16 +48,17 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 		Converters = { new JsonStringEnumConverter(), new SiegeDateConverter() }
 	};
 
-	private readonly SiegeStore _store;
+	private readonly SiegeRepository _sieges;
 	private readonly ILogger<MessagingAsyncRequestHandler>? _logger;
 
-	public MessagingAsyncRequestHandler(SiegeStore store, ILogger<MessagingAsyncRequestHandler>? logger = null)
+	public MessagingAsyncRequestHandler(SiegeRepository sieges, ILogger<MessagingAsyncRequestHandler>? logger = null)
 	{
-		_store = store;
+		_sieges = sieges;
 		_logger = logger;
 	}
 
-	public IRequestArgs HandleRequest(SessionContext context, Messaging.Request request)
+	public async Task<IRequestArgs> HandleRequestAsync(SessionContext context, Messaging.Request request,
+		CancellationToken token)
 	{
 		try
 		{
@@ -66,12 +69,12 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 			object reply = requestType switch
 			{
 				Messaging.ReqType_FeeInfo => FeeInfo(),
-				Messaging.ReqType_QueryStatus_ActiveForUser => Query(Read<QueryRequest>(json)),
-				Messaging.ReqType_QueryUserListing => UserListing(context, Read<UserListingRequest>(json)),
-				Messaging.ReqType_QuerySiegeLog => SiegeLog(Read<SiegeLogRequest>(json)),
-				Messaging.ReqType_CreateListing => Create(context, Read<CreateRequest>(json)),
-				Messaging.ReqType_ActivateListing => Activate(context, Read<SiegeIdRequest>(json)),
-				Messaging.ReqType_RemoveListing => Remove(context, Read<SiegeIdRequest>(json)),
+				Messaging.ReqType_QueryStatus_ActiveForUser => await Query(Read<QueryRequest>(json)),
+				Messaging.ReqType_QueryUserListing => await UserListing(context, Read<UserListingRequest>(json)),
+				Messaging.ReqType_QuerySiegeLog => await SiegeLog(Read<SiegeLogRequest>(json)),
+				Messaging.ReqType_CreateListing => await Create(context, Read<CreateRequest>(json)),
+				Messaging.ReqType_ActivateListing => await Activate(context, Read<SiegeIdRequest>(json)),
+				Messaging.ReqType_RemoveListing => await Remove(context, Read<SiegeIdRequest>(json)),
 				_ when requestType is not null && AttackRequests.Contains(requestType) =>
 					Refuse("Siege attacks aren't available on this server yet."),
 				_ => Refuse($"Unknown Siege request '{requestType}'.")
@@ -96,21 +99,21 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 	private static Messaging.FeeInfo.Response FeeInfo() => new() { Detail = Fees };
 
 	// The public defender list on the Attack screen. The client sorts and filters it itself, so Sorting is only echoed.
-	private Messaging.Query.Response Query(QueryRequest request) => new()
+	private async Task<object> Query(QueryRequest request) => new Messaging.Query.Response
 	{
 		QuerySort = request.Sorting ?? [],
 		QueryOffset = request.Offset,
 		QueryCount = request.Count,
-		Results = Page(_store.Open(), request.Offset, request.Count).Select(ToBits).ToArray()
+		Results = Page(await _sieges.GetOpenAsync(), request.Offset, request.Count).Select(ToBits).ToArray()
 	};
 
 	// The player's own defenses for the Defense screen. The client loops over Results without a null check.
-	private Messaging.UserListing.Response UserListing(SessionContext context, UserListingRequest request)
+	private async Task<object> UserListing(SessionContext context, UserListingRequest request)
 	{
-		var defenses = _store.ForPlayer(context.ProfileId).Where(d => request.SiegeStatus switch
+		var defenses = (await _sieges.GetForPlayerAsync(context.ProfileId)).Where(d => request.SiegeStatus switch
 		{
-			Messaging.UserListing.Status.ACTIVE => d.IsOpen,
-			Messaging.UserListing.Status.CLOSED => !d.IsOpen,
+			Messaging.UserListing.Status.ACTIVE => IsOpen(d),
+			Messaging.UserListing.Status.CLOSED => !IsOpen(d),
 			_ => true
 		});
 
@@ -125,21 +128,23 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 
 	// The events log. The Defense screen asks by PlayerId for "my latest defense"; by SiegeId for a given one. With no
 	// defense, Siege is left out; Logs and Replays must still be lists because the client loops over both.
-	private Messaging.SiegeLog.Response SiegeLog(SiegeLogRequest request)
+	private async Task<object> SiegeLog(SiegeLogRequest request)
 	{
-		var defense = request.SiegeId != 0 ? _store.Get(request.SiegeId) : _store.Latest(request.PlayerId);
+		var defense = request.SiegeId != 0
+			? await _sieges.GetAsync(request.SiegeId)
+			: await _sieges.GetLatestForPlayerAsync(request.PlayerId);
 
 		return new Messaging.SiegeLog.Response
 		{
 			Siege = defense is null ? null! : ToBits(defense),
-			Logs = defense is null ? [] : _store.Log(defense.Id).Select(ToBits).ToArray(),
+			Logs = defense is null ? [] : (await _sieges.GetLedgerAsync(defense.Id)).Select(ToBits).ToArray(),
 			Replays = [] // Milestone 7
 		};
 	}
 
 	// Commit Defense. The client already stops the player from committing with an empty slot, but the server can't
 	// trust that, so it checks the decks and the bounty again before storing anything.
-	private object Create(SessionContext context, CreateRequest request)
+	private async Task<object> Create(SessionContext context, CreateRequest request)
 	{
 		var fights = request.Fights ?? [];
 		if (fights.Length != FightsPerDefense || fights.Any(f => !IsPlayableDeck(f.Deck)))
@@ -151,8 +156,28 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 			return Refuse($"The bounty must be at least {minimum} {currency.ToString().ToLowerInvariant()}.");
 
 		// No wallet yet (Milestone 4), so the bounty isn't taken from the player and the defense goes straight to ACTIVE.
-		if (!_store.TryCreate(context.ProfileId, context.UserName ?? "", currency, request.PotAmount,
-			    request.ChallengeLimit, PackFights(fights), out var defense))
+		var now = Now();
+		var playerName = context.UserName ?? "";
+		var defense = await _sieges.TryCreateAsync(new Siege
+		{
+			PlayerProfileId = context.ProfileId,
+			PlayerName = playerName,
+			Currency = (SiegeCurrency)currency,
+			Pot = request.PotAmount,
+			ChallengeLimit = request.ChallengeLimit,
+			FightInfo = PackFights(fights),
+			Status = SiegeStatus.Active,
+			Created = now,
+			StatusDate = now
+		}, new SiegeLedger
+		{
+			Action = SiegeAction.State,
+			Context = nameof(siege_bits.Status.ACTIVE),
+			PlayerProfileId = context.ProfileId,
+			PlayerName = playerName,
+			Created = now
+		});
+		if (defense is null)
 			return Refuse("You already have an active defense. Withdraw it before committing a new one.");
 
 		_logger?.LogInformation("Siege: {user} committed defense {id} with a {pot} {currency} bounty", context.UserName,
@@ -161,23 +186,23 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 	}
 
 	// The client never sends this today (create already returns an active defense), but answer it the same way.
-	private object Activate(SessionContext context, SiegeIdRequest request)
+	private async Task<object> Activate(SessionContext context, SiegeIdRequest request)
 	{
-		var defense = _store.Get(request.SiegeId);
-		if (defense is null || defense.PlayerId != context.ProfileId)
+		var defense = await _sieges.GetAsync(request.SiegeId);
+		if (defense is null || defense.PlayerProfileId != context.ProfileId)
 			return Refuse("That defense doesn't exist.");
 
 		return new Messaging.Activate.Response { Updated = ToBits(defense) };
 	}
 
 	// Withdraw. The reply is the closed defense, which the client shows on its results screen.
-	private object Remove(SessionContext context, SiegeIdRequest request)
+	private async Task<object> Remove(SessionContext context, SiegeIdRequest request)
 	{
-		var defense = _store.Get(request.SiegeId);
-		if (defense is null || defense.PlayerId != context.ProfileId)
+		var defense = await _sieges.GetAsync(request.SiegeId);
+		if (defense is null || defense.PlayerProfileId != context.ProfileId)
 			return Refuse("That defense doesn't exist.");
 
-		var closed = _store.Close(defense.Id);
+		var closed = await _sieges.CloseAsync(defense.Id, Now());
 		if (closed is null)
 			return Refuse("That defense is already closed.");
 
@@ -227,7 +252,7 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 		return Compressor.Compress(buffer.ToArray());
 	}
 
-	private static siege_bits ToBits(SiegeDefense defense)
+	private static siege_bits ToBits(Siege defense)
 	{
 		// What an attacker pays, split the way the rules text describes: a fee to the defender, a bet added to the
 		// bounty, and the rest burned (the rake).
@@ -238,10 +263,10 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 		return new siege_bits
 		{
 			Id = defense.Id,
-			PlayerID = defense.PlayerId,
+			PlayerID = defense.PlayerProfileId,
 			Name = defense.PlayerName,
 			FightInfo = defense.FightInfo,
-			CurStatus = defense.Status,
+			CurStatus = (siege_bits.Status)defense.Status,
 			StatusDate = defense.StatusDate,
 			ChallengeCount = defense.ChallengeCount,
 			Wins = defense.Wins,
@@ -251,24 +276,36 @@ public sealed class MessagingAsyncRequestHandler : IRequestHandler<Messaging.Req
 			ChallengeFee = fee,
 			ChallengeBet = bet,
 			ChallengeRake = cost - fee - bet,
-			Currency = defense.Currency,
+			Currency = (siege_bits.CurrencyType)defense.Currency,
 			CloseDate = defense.CloseDate,
 			LastChallengeDate = defense.LastChallengeDate,
 			Created = defense.Created
 		};
 	}
 
-	private static siege_ledger_bits ToBits(SiegeLogEntry entry) => new()
+	private static siege_ledger_bits ToBits(SiegeLedger entry) => new()
 	{
 		Id = entry.Id,
 		SiegeId = entry.SiegeId,
-		Action = entry.Action,
+		Action = (siege_ledger_bits.SiegeAction)entry.Action,
 		Context = entry.Context,
-		PlayerId = entry.PlayerId,
+		FightSeq = entry.FightSeq,
+		Wins = entry.Wins,
+		PlayerId = entry.PlayerProfileId,
 		PlayerName = entry.PlayerName,
-		Escrow = siege_ledger_bits.EscrowState.NONE,
+		PlayerDT = entry.PlayerDeck,
+		Forfeit = entry.Forfeit,
+		Escrow = (siege_ledger_bits.EscrowState)entry.Escrow,
+		Bet = (uint)entry.Bet,
+		Fee = (uint)entry.Fee,
+		Rake = (uint)entry.Rake,
 		Created = entry.Created
 	};
+
+	private static bool IsOpen(Siege defense) => Siege.OpenStatuses.Contains(defense.Status);
+
+	// The client shows these dates as they come, without a time zone, so they are server-local like the rest of Dingler.
+	private static DateTime Now() => DateTime.Now;
 
 	// Count 0 means "all of them", which is what the client asks for today.
 	private static IEnumerable<T> Page<T>(IEnumerable<T> items, int offset, int count)
