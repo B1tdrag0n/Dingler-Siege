@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Dingler.Data.Entities.GameData;
 using Dingler.Data.Enums;
 using Dingler.Data.Repositories;
+using Dingler.Game.Wallet;
 using Dingler.Server;
 using Dingler.Server.Abstractions;
 using Dingler.Server.Attributes;
@@ -49,11 +50,14 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 	};
 
 	private readonly SiegeRepository _sieges;
+	private readonly WalletService _wallet;
 	private readonly ILogger<MessagingAsyncRequestHandler>? _logger;
 
-	public MessagingAsyncRequestHandler(SiegeRepository sieges, ILogger<MessagingAsyncRequestHandler>? logger = null)
+	public MessagingAsyncRequestHandler(SiegeRepository sieges, WalletService wallet,
+		ILogger<MessagingAsyncRequestHandler>? logger = null)
 	{
 		_sieges = sieges;
+		_wallet = wallet;
 		_logger = logger;
 	}
 
@@ -155,7 +159,11 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		if (request.PotAmount < minimum)
 			return Refuse($"The bounty must be at least {minimum} {currency.ToString().ToLowerInvariant()}.");
 
-		// No wallet yet (Milestone 4), so the bounty isn't taken from the player and the defense goes straight to ACTIVE.
+		// The bounty comes out of the player's wallet up front, and goes back if the defense can't be stored. The defense
+		// goes straight to ACTIVE.
+		if (!_wallet.TrySpend(context.ProfileId, (SiegeCurrency)currency, request.PotAmount))
+			return Refuse($"You don't have {request.PotAmount} {currency.ToString().ToLowerInvariant()} for this bounty.");
+
 		var now = Now();
 		var playerName = context.UserName ?? "";
 		var defense = await _sieges.TryCreateAsync(new Siege
@@ -178,7 +186,12 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			Created = now
 		});
 		if (defense is null)
+		{
+			_wallet.Add(context.ProfileId, (SiegeCurrency)currency, request.PotAmount);
 			return Refuse("You already have an active defense. Withdraw it before committing a new one.");
+		}
+
+		_wallet.SendBalance(context);
 
 		_logger?.LogInformation("Siege: {user} committed defense {id} with a {pot} {currency} bounty", context.UserName,
 			defense.Id, defense.Pot, currency);
@@ -206,7 +219,12 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		if (closed is null)
 			return Refuse("That defense is already closed.");
 
-		_logger?.LogInformation("Siege: {user} withdrew defense {id}", context.UserName, closed.Id);
+		// Withdrawing hands the bounty back to the defender.
+		_wallet.Add(context.ProfileId, closed.Currency, closed.Pot);
+		_wallet.SendBalance(context);
+
+		_logger?.LogInformation("Siege: {user} withdrew defense {id} and got back {pot} {currency}", context.UserName,
+			closed.Id, closed.Pot, closed.Currency);
 		return new Messaging.Remove.Response { Updated = ToBits(closed) };
 	}
 

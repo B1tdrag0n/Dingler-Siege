@@ -24,11 +24,14 @@ namespace Dingler.Game.Services
         public Dictionary<ulong, ResourceId> CollectionIds { get; set; } = new();
 
         private readonly Dingler.Game.Arena.ArenaRunStore? _arenaRunStore;
+        private readonly Dingler.Game.Wallet.WalletService? _wallet;
 
-        public CollectionCacheService(string path, Dingler.Game.Arena.ArenaRunStore? arenaRunStore = null)
+        public CollectionCacheService(string path, Dingler.Game.Arena.ArenaRunStore? arenaRunStore = null,
+            Dingler.Game.Wallet.WalletService? wallet = null)
         {
             _path = path;
             _arenaRunStore = arenaRunStore;
+            _wallet = wallet;
         }
         
         public void Initialize()
@@ -119,10 +122,11 @@ namespace Dingler.Game.Services
                 Name = context.UserName
             };
 
+            var balance = _wallet?.Get(profileId) ?? default;
             var reckoningBits = new reckoning_bits()
             {
-                Gold = 0,
-                Platinum = 0,
+                Gold = balance.Gold,
+                Platinum = balance.Platinum,
                 Name = context.UserName
             };
 

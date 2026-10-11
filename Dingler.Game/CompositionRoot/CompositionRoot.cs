@@ -64,7 +64,11 @@ namespace Dingler.Game.CompositionRoot
                         : Path.Combine(AppContext.BaseDirectory, "data", "deck-inbox"),
                 });
 
-                sc.AddSingletonStartupService(_ => new CollectionCacheService(gameDataLocation, arenaRunStore))
+                // Gold and platinum, in memory only for now (Milestone 4).
+                var wallet = new Dingler.Game.Wallet.WalletService();
+                sc.AddSingleton(wallet);
+
+                sc.AddSingletonStartupService(_ => new CollectionCacheService(gameDataLocation, arenaRunStore, wallet))
                     .AddHttpClient("AuthClient", (sp, client) =>
                     {
                         var auth = sp.GetRequiredService<IOptions<AuthOptions>>().Value;
