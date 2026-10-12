@@ -71,6 +71,7 @@ namespace Dingler.Game.CompositionRoot
                 // Siege attacks in progress, and the attack payments (the one place they touch the wallet).
                 sc.AddSingleton<Dingler.Game.Sieges.SiegeAttacks>();
                 sc.AddSingleton<Dingler.Game.Sieges.SiegePayments>();
+                sc.AddSingleton<Dingler.Game.Sieges.SiegeBattleService>();
 
                 sc.AddSingletonStartupService(_ => new CollectionCacheService(gameDataLocation, arenaRunStore, wallet))
                     .AddHttpClient("AuthClient", (sp, client) =>

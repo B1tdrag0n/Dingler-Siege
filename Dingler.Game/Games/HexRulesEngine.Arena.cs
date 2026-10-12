@@ -47,17 +47,22 @@ public sealed partial class HexRulesEngine
 
 	/// <summary>With flag 128 the engine's own InitPvEArenaEncounter loads no decks, so the server loads both and starts
 	/// the game itself. Runs on the calling thread, before the pump, like a tournament game's start.</summary>
-	internal void StartArenaGame(TrackedPlayer human, deck_bits humanDeck, string userName, TrackedPlayer ai)
+	internal void StartArenaGame(TrackedPlayer human, deck_bits humanDeck, string userName, TrackedPlayer ai, deck_bits? aiDeck = null)
 	{
 		if (!InitializeGame())
 			throw new InvalidOperationException("arena battle failed to initialize");
 		LoadPlayerDeck(human, humanDeck, null, userName, null, null);   // the champion card gets the user name (Dingler's lookups need it)
-		LoadPlayerDeck(ai, null, null, string.Empty, null, null);         // from ai.m_DeckTemplateID, the arena opponent's deck
+		// Arena: from ai.m_DeckTemplateID, the arena opponent's deck. Siege: the defense deck, which also carries the AI
+		// personality (the engine sends it to the AI as SetDeckPersonality when the game starts).
+		LoadPlayerDeck(ai, aiDeck, null, string.Empty, null, null);
 		if (CurrentTurnPhase == ETurnPhases.NotPlaying)
 			CheckStartGameMethod.Invoke(this, null);
 		if (CurrentTurnPhase == ETurnPhases.NotPlaying)
 			throw new InvalidOperationException("arena battle did not start (a deck failed to load?)");
 	}
+
+	/// <summary>A Siege fight (session flag IsSiege): built and voided like an arena battle, without battle mods.</summary>
+	internal bool IsSiegeBattle => (m_EncounterData?.SessionFlags & ESessionFlags.IsSiege) != 0;
 
 	// ---------- the AI seat ----------
 

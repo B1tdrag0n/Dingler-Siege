@@ -20,6 +20,9 @@ public sealed class SiegeAttacks
 		/// <summary>The attacker's deck exactly as the client sent it with the challenge.</summary>
 		public required JsonElement Deck { get; init; }
 
+		/// <summary>The defense's 3 fights as committed, each {Deck, Message}.</summary>
+		public required JsonElement[] Fights { get; init; }
+
 		/// <summary>The attacker's connection; the attack's events are pushed through it.</summary>
 		public required SessionContext Session { get; init; }
 

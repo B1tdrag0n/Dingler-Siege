@@ -4,6 +4,7 @@ using Dingler.Server.Abstractions;
 using Dingler.Server.Attributes;
 using Dingler.Game.Arena;
 using Dingler.Game.Games;
+using Dingler.Game.Sieges;
 using HexGame::Game.Client.Network.LoadBalancer;
 using HexGame::Game.Shared;
 using HexGame::Game.Shared.Network.LoadBalancer;
@@ -13,7 +14,8 @@ namespace Dingler.Game.Handlers.Request.Arena;
 
 // Frost Ring Arena, build step 4: the battle start. After the Battle button the client sends, in order:
 // FindSession (22019), StartEncounter (22017), JoinSession (22021), ReadyToStartGame (22031). Only arena battles use
-// this path in Dingler (tournament games start through TournamentSessionStart / ReadyForGameSetup instead).
+// this path in Dingler (tournament games start through TournamentSessionStart / ReadyForGameSetup instead), and Siege
+// fights: after "siege:gstart" the client asks for its game the same way, so a waiting Siege game is served first.
 
 // 22019: must fail; the client then asks StartEncounter for a flag-128 encounter.
 [Authenticated]
@@ -32,12 +34,15 @@ public sealed class FindSessionRequestHandler : IRequestHandler<FindSessionReque
 public sealed class StartEncounterRequestHandler : IRequestHandler<StartEncounterRequestArgs, StartEncounterResponse>
 {
 	private readonly ArenaBattleService _battles;
+	private readonly SiegeBattleService _siege;
 	private readonly GameManager _games;
 	private readonly ILogger<StartEncounterRequestHandler>? _logger;
 
-	public StartEncounterRequestHandler(ArenaBattleService battles, GameManager games, ILogger<StartEncounterRequestHandler>? logger = null)
+	public StartEncounterRequestHandler(ArenaBattleService battles, SiegeBattleService siege, GameManager games,
+		ILogger<StartEncounterRequestHandler>? logger = null)
 	{
 		_battles = battles;
+		_siege = siege;
 		_games = games;
 		_logger = logger;
 	}
@@ -47,6 +52,18 @@ public sealed class StartEncounterRequestHandler : IRequestHandler<StartEncounte
 		var human = ArenaBattleService.HumanId(context);
 		try
 		{
+			if (_siege.TryReserve(context, _games, out var siegeState))
+			{
+				return new StartEncounterResponse
+				{
+					Success = true,
+					RoutingPlayerId = human,
+					SessionState = siegeState,
+					SessionID = siegeState.SessionId,
+					ServerID = UID.Invalid,
+				};
+			}
+
 			var isArena = request.EncounterData is not null && (request.EncounterData.SessionFlags & ESessionFlags.IsPvEArena) != 0;
 			if (isArena)
 			{
@@ -75,12 +92,15 @@ public sealed class StartEncounterRequestHandler : IRequestHandler<StartEncounte
 public sealed class JoinSessionRequestHandler : IRequestHandler<JoinSessionRequestArgs, JoinSessionResponse>
 {
 	private readonly ArenaBattleService _battles;
+	private readonly SiegeBattleService _siege;
 	private readonly GameManager _games;
 	private readonly ILogger<JoinSessionRequestHandler>? _logger;
 
-	public JoinSessionRequestHandler(ArenaBattleService battles, GameManager games, ILogger<JoinSessionRequestHandler>? logger = null)
+	public JoinSessionRequestHandler(ArenaBattleService battles, SiegeBattleService siege, GameManager games,
+		ILogger<JoinSessionRequestHandler>? logger = null)
 	{
 		_battles = battles;
+		_siege = siege;
 		_games = games;
 		_logger = logger;
 	}
@@ -90,6 +110,24 @@ public sealed class JoinSessionRequestHandler : IRequestHandler<JoinSessionReque
 		var human = ArenaBattleService.HumanId(context);
 		try
 		{
+			if (_siege.HasPending(context))
+			{
+				if (_siege.TryStart(context, _games, request.SelfTurnPhases, request.OpponentTurnPhases, out var game, out var why))
+					return new JoinSessionResponse
+					{
+						Success = true,
+						RoutingPlayerId = human,
+						SessionState = game.State,
+						SessionPlayers = new List<PlayerState>
+						{
+							new() { PlayerId = human, PlayerPosition = 0 },
+							new() { PlayerId = game.Ai, PlayerPosition = 1 },
+						},
+					};
+				_logger?.LogWarning("Siege: JoinSession refused for {user}: {reason}", context.UserName, why);
+				return new JoinSessionResponse { Success = false, RoutingPlayerId = human };
+			}
+
 			if (_battles.TryStart(context, _games, request.SessionId.GetInstanceId(), request.DeckID,
 				    request.SelfTurnPhases, request.OpponentTurnPhases, out var pending, out var reason))
 			{
@@ -122,11 +160,14 @@ public sealed class JoinSessionRequestHandler : IRequestHandler<JoinSessionReque
 public sealed class ReadyToStartGameRequestHandler : IRequestHandler<ReadyToStartGameRequestArgs>
 {
 	private readonly ArenaBattleService _battles;
+	private readonly SiegeBattleService _siege;
 	private readonly ILogger<ReadyToStartGameRequestHandler>? _logger;
 
-	public ReadyToStartGameRequestHandler(ArenaBattleService battles, ILogger<ReadyToStartGameRequestHandler>? logger = null)
+	public ReadyToStartGameRequestHandler(ArenaBattleService battles, SiegeBattleService siege,
+		ILogger<ReadyToStartGameRequestHandler>? logger = null)
 	{
 		_battles = battles;
+		_siege = siege;
 		_logger = logger;
 	}
 
@@ -136,6 +177,17 @@ public sealed class ReadyToStartGameRequestHandler : IRequestHandler<ReadyToStar
 		{
 			if (!request.IsReady)
 				return;
+			if (_siege.TryGetActive(context, out var siegeGame) && siegeGame.Game is not null && siegeGame.Applied == 0)
+			{
+				context.TrySendMessageToClient(new HexGame::Game.Shared.Network.GameSession.PlayerAddedEventArgs
+				{
+					RoutingPlayerId = siegeGame.Human,
+					PlayerState = new PlayerState { PlayerId = siegeGame.Ai, PlayerPosition = 1 },
+				});
+				siegeGame.Game.PlayerIsReadyForEvents(siegeGame.Human);
+				_logger?.LogInformation("Siege: {user} is ready; fight running", context.UserName);
+				return;
+			}
 			if (!_battles.TryGetActive(context, out var battle) || battle.Game is null || battle.Applied != 0)
 			{
 				_logger?.LogWarning("Arena: {user} is ready but has no running battle", context.UserName);

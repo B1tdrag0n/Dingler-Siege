@@ -7,6 +7,7 @@ using Dingler.Data.Entities.GameData;
 using Dingler.Data.Enums;
 using Dingler.Data.Repositories;
 using Dingler.Game.Sieges;
+using static Dingler.Game.Sieges.SiegeWire;
 using Dingler.Game.Wallet;
 using Dingler.Server;
 using Dingler.Server.Abstractions;
@@ -27,15 +28,6 @@ namespace Dingler.Game.Handlers.Request.Profile;
 [Authenticated]
 public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messaging.Request, IRequestArgs>
 {
-	// Fee rules from the client's rules text: 1000 gold / 50 platinum minimum bounty, attacking costs 40% of the
-	// bounty, and of that fee 50% goes to the defender and 37.5% is added to the bounty (the rest is burned).
-	private static readonly Messaging.FeeDetail Fees = new(1000, 50, 0.4f, 0.5f, 0.375f);
-
-	private const int FightsPerDefense = 3;
-
-	// The wait on the assault screen before each game.
-	private static readonly TimeSpan Intermission = TimeSpan.FromSeconds(10);
-
 	// Not built yet: testing your own defense and practice games. Lock is only an admin console command in the client.
 	// These get a clear refusal rather than silence.
 	private static readonly HashSet<string> NotAvailableRequests =
@@ -43,29 +35,21 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		Messaging.ReqType_TestListing, Messaging.ReqType_PracticeGame, Messaging.ReqType_Lock
 	];
 
-	// The client reads replies with Newtonsoft.Json: public fields, exact field names, and enums as names or numbers.
-	// Its Siege dates must be "yyyy-MM-dd HH:mm:ss", and a missing date is left out rather than sent as null.
-	// (The game DLL's own Newtonsoft copy can read here but fails to write outside Unity, so we write with System.Text.Json.)
-	private static readonly JsonSerializerOptions JsonOptions = new()
-	{
-		IncludeFields = true,
-		DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-		Converters = { new JsonStringEnumConverter(), new SiegeDateConverter() }
-	};
-
 	private readonly SiegeRepository _sieges;
 	private readonly WalletService _wallet;
 	private readonly SiegeAttacks _attacks;
 	private readonly SiegePayments _payments;
+	private readonly SiegeBattleService _battles;
 	private readonly ILogger<MessagingAsyncRequestHandler>? _logger;
 
 	public MessagingAsyncRequestHandler(SiegeRepository sieges, WalletService wallet, SiegeAttacks attacks,
-		SiegePayments payments, ILogger<MessagingAsyncRequestHandler>? logger = null)
+		SiegePayments payments, SiegeBattleService battles, ILogger<MessagingAsyncRequestHandler>? logger = null)
 	{
 		_sieges = sieges;
 		_wallet = wallet;
 		_attacks = attacks;
 		_payments = payments;
+		_battles = battles;
 		_logger = logger;
 	}
 
@@ -265,6 +249,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			AttackerId = context.ProfileId,
 			AttackerName = context.UserName ?? "",
 			Deck = request.Deck!.Value.Clone(),
+			Fights = UnpackFights(defense.FightInfo),
 			Session = context
 		};
 		var started = _attacks.TryAdd(attack)
@@ -292,14 +277,16 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		_logger?.LogInformation("Siege: {user} attacks {defender}'s defense {id} for {cost} {currency} (bounty now {pot})",
 			context.UserName, started.PlayerName, started.Id, cost.Total, currencyName, started.Pot);
 
-		// The event must reach the client after this reply, so it goes out a moment later.
-		var challengeEvent = ChallengeEvent(started, attack.Seq, Now() + Intermission);
+		// The event must reach the client after this reply, so it goes out a moment later. Fight 1 follows the countdown.
+		var firstGame = Now() + Intermission;
+		var challengeEvent = ChallengeEvent(started, attack.Seq, firstGame);
 		_ = Task.Run(async () =>
 		{
 			await Task.Delay(TimeSpan.FromMilliseconds(500));
 			if (!context.TrySendMessageToClient(challengeEvent))
 				_logger?.LogWarning("Siege: couldn't send the assault screen to {user}", attack.AttackerName);
 		});
+		_battles.ScheduleNextGame(attack, firstGame);
 
 		return new Messaging.Challenge.Response { Status = "OK" };
 	}
@@ -338,7 +325,10 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			Created = now
 		});
 		if (attack is not null)
+		{
 			_attacks.Remove(attack);
+			_battles.Abandon(attack);
+		}
 		if (ended is null)
 			return Refuse("There's no attack on that defense to forfeit.");
 
@@ -347,53 +337,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		return new Messaging.Forfeit.Response { Status = "OK" };
 	}
 
-	// "siege:challenge" tells the attacker where the attack stands: CurState INTERMISSION with the time of the next game,
-	// or VICTOR. Seq is the number of fights already won; KnownChamps shows the champions met so far plus the next one.
-	// Written by hand: the client reads it with Newtonsoft into SiegeState, whose constructor arguments it can't fill
-	// from our field names, and Source (a UID) is only used to remember the server, so it is left out.
-	private static Messaging.Request ChallengeEvent(Siege defense, int seq, DateTime nextGame, bool victory = false)
-	{
-		using var buffer = new MemoryStream();
-		using (var writer = new Utf8JsonWriter(buffer))
-		{
-			writer.WriteStartObject();
-			writer.WriteString("RequestType", Messaging.Event_SiegeChallenge);
-			writer.WriteStartObject("State");
-			writer.WriteString("nextEval", nextGame.ToString(SiegeDateConverter.Format, CultureInfo.InvariantCulture));
-			writer.WritePropertyName("PubInfo");
-			JsonSerializer.Serialize(writer, ToBits(defense), JsonOptions);
-			writer.WriteNumber("Seq", seq);
-			writer.WriteStartArray("KnownChamps");
-			foreach (var champion in UnpackFights(defense.FightInfo).Take(seq + 1).Select(f => f.GetProperty("Deck").GetProperty("Champ")))
-				champion.WriteTo(writer);
-			writer.WriteEndArray();
-			writer.WriteNumber("CurState", (int)(victory ? Messaging.SiegeState.State.VICTOR : Messaging.SiegeState.State.INTERMISSION));
-			writer.WriteEndObject();
-			writer.WriteEndObject();
-		}
-
-		return new Messaging.Request { Envelope = buffer.ToArray() };
-	}
-
 	private static ErrorArgs Refuse(string message) => new() { Error = 1, ErrorMessage = message };
-
-	// A deck counts if it has a champion and at least one card. The client sends the whole deck (Newtonsoft's view of
-	// ProfileDeckTemplate): the champion as {"m_Guid": ...} in "Champ", the cards as [{Temp, Count, ...}] in "CardDesc".
-	private static bool IsPlayableDeck(JsonElement? deck)
-	{
-		if (deck is not { ValueKind: JsonValueKind.Object } d)
-			return false;
-
-		var hasChampion = d.TryGetProperty("Champ", out var champ) && champ.ValueKind == JsonValueKind.Object &&
-		                  champ.TryGetProperty("m_Guid", out var guid) && Guid.TryParse(guid.GetString(), out var id) &&
-		                  id != Guid.Empty;
-
-		var cardCount = d.TryGetProperty("CardDesc", out var cards) && cards.ValueKind == JsonValueKind.Array
-			? cards.EnumerateArray().Sum(c => c.TryGetProperty("Count", out var n) && n.TryGetInt32(out var count) ? count : 0)
-			: 0;
-
-		return hasChampion && cardCount > 0;
-	}
 
 	// siege_bits.FightInfo is the gzipped JSON of the Create.FightConfig array, which the client unpacks to show the decks.
 	// The decks are copied exactly as the client sent them, so the defense keeps its own snapshot of each deck.
@@ -417,68 +361,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		return Compressor.Compress(buffer.ToArray());
 	}
 
-	// The 3 fights back out of siege_bits.FightInfo, each {Deck, Message}.
-	private static JsonElement[] UnpackFights(byte[] fightInfo)
-	{
-		using var document = JsonDocument.Parse(Compressor.Decompress(fightInfo));
-		return document.RootElement.EnumerateArray().Select(f => f.Clone()).ToArray();
-	}
-
-	// What an attacker pays, split the way the rules text describes: a fee to the defender, a bet added to the bounty,
-	// and the rest burned (the rake).
-	private static SiegeCost CostOf(int pot) =>
-		SiegeCost.For(pot, Fees.ChallengeCostPotPct, Fees.ChallengePotFeePct, Fees.ChallengePotBetPct);
-
-	private static siege_bits ToBits(Siege defense)
-	{
-		var cost = CostOf(defense.Pot);
-
-		return new siege_bits
-		{
-			Id = defense.Id,
-			PlayerID = defense.PlayerProfileId,
-			Name = defense.PlayerName,
-			FightInfo = defense.FightInfo,
-			CurStatus = (siege_bits.Status)defense.Status,
-			StatusDate = defense.StatusDate,
-			ChallengeCount = defense.ChallengeCount,
-			Wins = defense.Wins,
-			Loss = defense.Loss,
-			Pot = defense.Pot,
-			ChallengeLimit = defense.ChallengeLimit,
-			ChallengeFee = cost.Fee,
-			ChallengeBet = cost.Bet,
-			ChallengeRake = cost.Rake,
-			Currency = (siege_bits.CurrencyType)defense.Currency,
-			CloseDate = defense.CloseDate,
-			LastChallengeDate = defense.LastChallengeDate,
-			Created = defense.Created
-		};
-	}
-
-	private static siege_ledger_bits ToBits(SiegeLedger entry) => new()
-	{
-		Id = entry.Id,
-		SiegeId = entry.SiegeId,
-		Action = (siege_ledger_bits.SiegeAction)entry.Action,
-		Context = entry.Context,
-		FightSeq = entry.FightSeq,
-		Wins = entry.Wins,
-		PlayerId = entry.PlayerProfileId,
-		PlayerName = entry.PlayerName,
-		PlayerDT = entry.PlayerDeck,
-		Forfeit = entry.Forfeit,
-		Escrow = (siege_ledger_bits.EscrowState)entry.Escrow,
-		Bet = (uint)entry.Bet,
-		Fee = (uint)entry.Fee,
-		Rake = (uint)entry.Rake,
-		Created = entry.Created
-	};
-
 	private static bool IsOpen(Siege defense) => Siege.OpenStatuses.Contains(defense.Status);
-
-	// The client shows these dates as they come, without a time zone, so they are server-local like the rest of Dingler.
-	private static DateTime Now() => DateTime.Now;
 
 	// Count 0 means "all of them", which is what the client asks for today.
 	private static IEnumerable<T> Page<T>(IEnumerable<T> items, int offset, int count)
@@ -514,15 +397,4 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 	private sealed record CreateRequest(Messaging.Create.Currency Cur, int PotAmount, FightRequest[]? Fights,
 		int ChallengeLimit, ulong DebugReckId);
 
-	// Writes dates the way the client's SimpleDateTime converter reads them.
-	private sealed class SiegeDateConverter : JsonConverter<DateTime>
-	{
-		public const string Format = "yyyy-MM-dd HH:mm:ss";
-
-		public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-			DateTime.ParseExact(reader.GetString()!, Format, CultureInfo.InvariantCulture);
-
-		public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
-			writer.WriteStringValue(value.ToString(Format, CultureInfo.InvariantCulture));
-	}
 }

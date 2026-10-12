@@ -24,6 +24,9 @@ public sealed class SiegePayments
 		return true;
 	}
 
+	/// <summary>The attacker beat all 3 fights: the whole bounty is theirs.</summary>
+	public void PayBounty(ulong attackerId, SiegeCurrency currency, int pot) => _wallet.Add(attackerId, currency, pot);
+
 	/// <summary>Undoes TryChargeAttack, for an attack that couldn't start after all.</summary>
 	public void RefundAttack(ulong attackerId, ulong defenderId, SiegeCurrency currency, SiegeCost cost)
 	{

@@ -143,6 +143,29 @@ public sealed class SiegeRepository : BaseRepository<GameDataContext>
 	}
 
 	/// <summary>
+	/// Ends an attack that beat all 3 fights: the defense is DEFEATED and closed, and the DEFEATED row is logged. Returns
+	/// null if the defense isn't INGAME. The returned defense's Pot is the bounty the attacker won.
+	/// </summary>
+	public Task<Siege?> EndAttackDefeatedAsync(ulong siegeId, SiegeLedger defeated)
+	{
+		return EnqueueWriteAsync<Siege?>(async context =>
+		{
+			var siege = await context.Sieges.FindAsync(siegeId).ConfigureAwait(false);
+			if (siege is null || siege.Status != SiegeStatus.InGame)
+				return null;
+
+			defeated.Wins = siege.Wins;
+			siege.Status = SiegeStatus.Defeated;
+			siege.StatusDate = defeated.Created;
+			siege.CloseDate = defeated.Created;
+			siege.Loss++;
+			defeated.Siege = siege;
+			context.SiegeLedger.Add(defeated);
+			return siege;
+		});
+	}
+
+	/// <summary>
 	/// Withdraws an open defense and logs it. Returns null if there is no such defense or it is already closed.
 	/// </summary>
 	public Task<Siege?> CloseAsync(ulong siegeId, DateTime when)
