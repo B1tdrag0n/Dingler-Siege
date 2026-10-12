@@ -54,9 +54,8 @@ public sealed class SiegeBattleService
 	private readonly ILogger<SiegeBattleService>? _logger;
 	private readonly ConcurrentDictionary<ulong, PendingGame> _pending = new();   // by attacker profile id
 	private readonly ConcurrentDictionary<ulong, ActiveGame> _active = new();     // by attacker profile id
-	private readonly ConcurrentDictionary<ulong, Func<Task>> _afterGame = new();  // by attacker profile id, see AfterEndScreen
 
-	private static readonly TimeSpan EndScreenTimeout = TimeSpan.FromSeconds(90);
+	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(4);
 
 	public SiegeBattleService(SiegeAttacks attacks, SiegePayments payments, IServiceScopeFactory scopes,
 		ILogger<SiegeBattleService>? logger = null)
@@ -294,7 +293,7 @@ public sealed class SiegeBattleService
 			// An engine crash or a stuck AI isn't the attacker's fault: the same fight again (as the arena does).
 			_logger?.LogWarning("Siege: fight {seq} on defense {id} voided ({reason}); it will be replayed", seq + 1,
 				attack.SiegeId, voidReason ?? "no winner");
-			AfterEndScreen(attack.AttackerId, () => NextCountdownAsync(attack));
+			CountdownAfterGame(attack);
 			return;
 		}
 
@@ -303,30 +302,34 @@ public sealed class SiegeBattleService
 			if (!_attacks.Remove(attack))
 				return;
 			var now = Now();
-			var defended = await sieges.EndAttackDefendedAsync(attack.SiegeId, new SiegeLedger
+			var defendedRow = new SiegeLedger
 			{
 				Action = SiegeAction.Defended,
 				FightSeq = seq,
 				PlayerProfileId = attack.AttackerId,
 				PlayerName = attack.AttackerName,
 				Created = now
-			});
+			};
+			var defended = await sieges.EndAttackDefendedAsync(attack.SiegeId, defendedRow);
 			_logger?.LogInformation("Siege: {defender}'s defense {id} held against {user} at fight {seq}",
 				defended?.PlayerName, attack.SiegeId, attack.AttackerName, seq + 1);
+			// The client's end-of-game Continue opens the attack's results from the last "siege:saction" it got.
+			if (defended is not null)
+				attack.Session.TrySendMessageToClient(ActionEvent(defendedRow));
 			return;
 		}
 
 		attack.Seq = seq + 1;
 		if (attack.Seq < FightsPerDefense)
 		{
-			AfterEndScreen(attack.AttackerId, () => NextCountdownAsync(attack));
+			CountdownAfterGame(attack);
 			return;
 		}
 
 		// All 3 won: the defense falls and its bounty goes to the attacker.
 		if (!_attacks.Remove(attack))
 			return;
-		var defeated = await sieges.EndAttackDefeatedAsync(attack.SiegeId, new SiegeLedger
+		var defeatedRow = new SiegeLedger
 		{
 			Action = SiegeAction.Defeated,
 			FightSeq = seq,
@@ -334,7 +337,8 @@ public sealed class SiegeBattleService
 			PlayerName = attack.AttackerName,
 			Escrow = SiegeEscrow.Funded,
 			Created = Now()
-		});
+		};
+		var defeated = await sieges.EndAttackDefeatedAsync(attack.SiegeId, defeatedRow);
 		if (defeated is null)
 		{
 			_logger?.LogWarning("Siege: {user} won defense {id}, but it was no longer under attack; no bounty paid",
@@ -343,53 +347,29 @@ public sealed class SiegeBattleService
 		}
 
 		_payments.PayBounty(attack.AttackerId, defeated.Currency, defeated.Pot);
-		var victory = ChallengeEvent(defeated, FightsPerDefense, Now(), victory: true);
-		AfterEndScreen(attack.AttackerId, () =>
-		{
-			attack.Session.TrySendMessageToClient(victory);
-			return Task.CompletedTask;
-		});
+		// No countdown: the client's end-of-game Continue shows the victory from this event (Action DEFEATED).
+		attack.Session.TrySendMessageToClient(ActionEvent(defeatedRow));
 		_logger?.LogInformation("Siege: {user} defeated {defender}'s defense {id} and won {pot} {currency}",
 			attack.AttackerName, defeated.PlayerName, defeated.Id, defeated.Pot, defeated.Currency);
 	}
 
-	// A "siege:challenge" event moves the client to the assault screen at once, even out of the game's end screen, so
-	// after a game the next one waits until the attacker is back on a Siege screen (their client then sends a Siege
-	// request, e.g. feeinfo), or until EndScreenTimeout if it never comes.
-	private void AfterEndScreen(ulong attackerId, Func<Task> next)
+	// The next fight's countdown. The client only takes it while it is still in the game: there the event moves it to
+	// a fresh assault screen; on the assault screen itself it can't be shown again (UISiege allows no Attack -> Attack
+	// transition). So it goes out shortly after the game ends, leaving the end-of-game banner on screen for a moment.
+	private void CountdownAfterGame(SiegeAttacks.Attack attack)
 	{
-		_afterGame[attackerId] = next;
 		_ = Task.Run(async () =>
 		{
-			await Task.Delay(EndScreenTimeout);
-			await RunAfterGameAsync(attackerId, next);
+			await Task.Delay(EndScreenPause);
+			try
+			{
+				await NextCountdownAsync(attack);
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogError(ex, "Siege: sending the next countdown on defense {id} failed", attack.SiegeId);
+			}
 		});
-	}
-
-	/// <summary>The attacker's client sent a Siege request: it has left the game's end screen.</summary>
-	public void OnSiegeRequest(SessionContext context)
-	{
-		if (!_afterGame.TryGetValue(context.ProfileId, out var next))
-			return;
-		_ = Task.Run(async () =>
-		{
-			await Task.Delay(TimeSpan.FromMilliseconds(500));   // after the reply to that request
-			await RunAfterGameAsync(context.ProfileId, next);
-		});
-	}
-
-	private async Task RunAfterGameAsync(ulong attackerId, Func<Task> next)
-	{
-		if (!_afterGame.TryRemove(new KeyValuePair<ulong, Func<Task>>(attackerId, next)))
-			return;   // already sent
-		try
-		{
-			await next();
-		}
-		catch (Exception ex)
-		{
-			_logger?.LogError(ex, "Siege: sending the next step of an attack to its attacker failed");
-		}
 	}
 
 	// Back to the assault screen with the countdown, then the next (or the same, after a void) fight.

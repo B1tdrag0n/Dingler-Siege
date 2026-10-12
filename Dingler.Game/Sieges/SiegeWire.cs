@@ -37,11 +37,11 @@ public static class SiegeWire
 		Converters = { new JsonStringEnumConverter(), new SiegeDateConverter() }
 	};
 
-	// "siege:challenge" tells the attacker where the attack stands: CurState INTERMISSION with the time of the next game,
-	// or VICTOR. Seq is the number of fights already won; KnownChamps shows the champions met so far plus the next one.
+	// "siege:challenge" tells the attacker where the attack stands: CurState INTERMISSION with the time of the next game
+	// (the client's VICTOR handling never shows a result, so the end of an attack is a "siege:saction" instead). Seq is the number of fights already won; KnownChamps shows the champions met so far plus the next one.
 	// Written by hand: the client reads it with Newtonsoft into SiegeState, whose constructor arguments it can't fill
 	// from our field names, and Source (a UID) is only used to remember the server, so it is left out.
-	public static Messaging.Request ChallengeEvent(Siege defense, int seq, DateTime nextGame, bool victory = false)
+	public static Messaging.Request ChallengeEvent(Siege defense, int seq, DateTime nextGame)
 	{
 		using var buffer = new MemoryStream();
 		using (var writer = new Utf8JsonWriter(buffer))
@@ -58,7 +58,7 @@ public static class SiegeWire
 			foreach (var champion in UnpackFights(defense.FightInfo).Take(seq + 1).Select(f => f.GetProperty("Deck").GetProperty("Champ")))
 				champion.WriteTo(writer);
 			writer.WriteEndArray();
-			writer.WriteNumber("CurState", (int)(victory ? Messaging.SiegeState.State.VICTOR : Messaging.SiegeState.State.INTERMISSION));
+			writer.WriteNumber("CurState", (int)Messaging.SiegeState.State.INTERMISSION);
 			writer.WriteEndObject();
 			writer.WriteEndObject();
 		}
@@ -160,6 +160,23 @@ public static class SiegeWire
 	// "siege:gstart" starts game Seq (0-based, like the challenge event's Seq) of Max: the client opens the battle from
 	// GameSession, an EncData-encoded SessionState, and shows the defender's taunt Msg. Written by hand like
 	// ChallengeEvent; GameSession goes out as base64, which is how Newtonsoft reads a byte array.
+	// "siege:saction" carries one events log row; the client adds it to its log, and the last one decides the results
+	// shown after a Siege game (DEFEATED is a victory for the attacker). Source is left out as in the other events.
+	public static Messaging.Request ActionEvent(SiegeLedger row)
+	{
+		using var buffer = new MemoryStream();
+		using (var writer = new Utf8JsonWriter(buffer))
+		{
+			writer.WriteStartObject();
+			writer.WriteString("RequestType", Messaging.Event_SiegeAction);
+			writer.WritePropertyName("Event");
+			JsonSerializer.Serialize(writer, ToBits(row), JsonOptions);
+			writer.WriteEndObject();
+		}
+
+		return new Messaging.Request { Envelope = buffer.ToArray() };
+	}
+
 	public static Messaging.Request GameStartEvent(SessionState session, ulong siegeId, string? taunt, int seq)
 	{
 		using var buffer = new MemoryStream();
