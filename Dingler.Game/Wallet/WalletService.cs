@@ -1,13 +1,10 @@
-extern alias HexGame;
 using Dingler.Data.Enums;
-using Dingler.Server;
-using HexGame::Game.Shared.Network.Profile;
 
 namespace Dingler.Game.Wallet;
 
 /// <summary>
 /// Each player's gold and platinum, keyed by profile id. Milestone 4 keeps it in memory only: every balance starts at 0
-/// and is lost when Dingler.Terminal stops. Test money comes from the "/givemoney" chat command (ChatMessageRequestHandler).
+/// and is lost when Dingler.Terminal stops. The balance reaches the client in the profile sent at login. Test money comes from the "/givemoney" chat command (ChatMessageRequestHandler).
 /// </summary>
 public sealed class WalletService
 {
@@ -48,12 +45,5 @@ public sealed class WalletService
 			_balances[profileId] = balance.Plus(currency, -amount);
 			return true;
 		}
-	}
-
-	/// <summary>Tells the client the player's current balance, so the gold and platinum counters update straight away.</summary>
-	public void SendBalance(SessionContext context)
-	{
-		var balance = Get(context.ProfileId);
-		context.TrySendMessageToClient(new BalanceUpdateEventArgs(balance.Gold, balance.Platinum));
 	}
 }

@@ -43,8 +43,14 @@ public class ChatMessageRequestHandler : IAsyncRequestHandler<ChatMessageRequest
 
 		if (message.StartsWith(GiveMoneyCommand, StringComparison.OrdinalIgnoreCase))
 		{
+			// The answer is shaped exactly like the sender's own chat line (their name and icon), with "[Wallet]" in front.
+			// A line from a made-up sender ("Wallet", no icon) is the likely cause of a disconnect seen in testing.
 			var answer = GiveMoney(context, message[GiveMoneyCommand.Length..]);
-			context.TrySendMessageToClient(new RawChatRequest { Action = "rchat", Room = raw.Room, User = "Wallet", Message = answer });
+			context.TrySendMessageToClient(new RawChatRequest
+			{
+				Action = "rchat", Room = raw.Room, User = context.UserName ?? raw.User, PlayerIcon = raw.PlayerIcon,
+				Message = "[Wallet] " + answer
+			});
 			return;
 		}
 
@@ -73,7 +79,6 @@ public class ChatMessageRequestHandler : IAsyncRequestHandler<ChatMessageRequest
 		}
 
 		var balance = _wallet.Add(context.ProfileId, currency, amount);
-		_wallet.SendBalance(context);
-		return $"Added {amount} {currency.ToString().ToLowerInvariant()}. You now have {balance.Gold} gold and {balance.Platinum} platinum.";
+		return $"Added {amount} {currency.ToString().ToLowerInvariant()}. You now have {balance.Gold} gold and {balance.Platinum} platinum. Log out and back in to see it on the counters.";
 	}
 }

@@ -191,7 +191,6 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			return Refuse("You already have an active defense. Withdraw it before committing a new one.");
 		}
 
-		_wallet.SendBalance(context);
 
 		_logger?.LogInformation("Siege: {user} committed defense {id} with a {pot} {currency} bounty", context.UserName,
 			defense.Id, defense.Pot, currency);
@@ -221,7 +220,6 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 
 		// Withdrawing hands the bounty back to the defender.
 		_wallet.Add(context.ProfileId, closed.Currency, closed.Pot);
-		_wallet.SendBalance(context);
 
 		_logger?.LogInformation("Siege: {user} withdrew defense {id} and got back {pot} {currency}", context.UserName,
 			closed.Id, closed.Pot, closed.Currency);
