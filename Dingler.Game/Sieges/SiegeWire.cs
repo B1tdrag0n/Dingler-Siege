@@ -49,7 +49,8 @@ public static class SiegeWire
 			writer.WriteStartObject();
 			writer.WriteString("RequestType", Messaging.Event_SiegeChallenge);
 			writer.WriteStartObject("State");
-			writer.WriteString("nextEval", nextGame.ToString(SiegeDateConverter.Format, CultureInfo.InvariantCulture));
+			// In UTC: with the server's local time the client showed no countdown (it seems to compare against UTC).
+			writer.WriteString("nextEval", nextGame.ToUniversalTime().ToString(SiegeDateConverter.Format, CultureInfo.InvariantCulture));
 			writer.WritePropertyName("PubInfo");
 			JsonSerializer.Serialize(writer, ToBits(defense), JsonOptions);
 			writer.WriteNumber("Seq", seq);

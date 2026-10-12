@@ -68,6 +68,8 @@ public sealed class SiegeBattleService
 	public void ScheduleNextGame(SiegeAttacks.Attack attack, DateTime when)
 	{
 		var seq = attack.Seq;
+		_logger?.LogInformation("Siege: fight {seq} of {user}'s attack on defense {id} starts at {when:HH:mm:ss}", seq + 1,
+			attack.AttackerName, attack.SiegeId, when);
 		_ = Task.Run(async () =>
 		{
 			var wait = when - Now();
@@ -88,7 +90,10 @@ public sealed class SiegeBattleService
 	{
 		// The attack may have ended (forfeit) or moved on while we waited.
 		if (!_attacks.TryGetBySiege(attack.SiegeId, out var current) || current != attack || attack.Seq != seq)
+		{
+			_logger?.LogDebug("Siege: fight {seq} of the attack on defense {id} is no longer due", seq + 1, attack.SiegeId);
 			return;
+		}
 
 		var state = new SessionState
 		{
