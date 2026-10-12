@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Dingler.Data.Entities.GameData;
 using Dingler.Data.Enums;
 using Dingler.Data.Repositories;
+using Dingler.Game.Sieges;
 using Dingler.Game.Wallet;
 using Dingler.Server;
 using Dingler.Server.Abstractions;
@@ -32,11 +33,14 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 
 	private const int FightsPerDefense = 3;
 
-	// Attacks are Milestone 5. Until then these get a clear refusal rather than silence.
-	private static readonly HashSet<string> AttackRequests =
+	// The wait on the assault screen before each game.
+	private static readonly TimeSpan Intermission = TimeSpan.FromSeconds(10);
+
+	// Not built yet: testing your own defense and practice games. Lock is only an admin console command in the client.
+	// These get a clear refusal rather than silence.
+	private static readonly HashSet<string> NotAvailableRequests =
 	[
-		Messaging.ReqType_ChallengeListing, Messaging.ReqType_Forfeit, Messaging.ReqType_TestListing,
-		Messaging.ReqType_PracticeGame, Messaging.ReqType_Lock
+		Messaging.ReqType_TestListing, Messaging.ReqType_PracticeGame, Messaging.ReqType_Lock
 	];
 
 	// The client reads replies with Newtonsoft.Json: public fields, exact field names, and enums as names or numbers.
@@ -51,13 +55,17 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 
 	private readonly SiegeRepository _sieges;
 	private readonly WalletService _wallet;
+	private readonly SiegeAttacks _attacks;
+	private readonly SiegePayments _payments;
 	private readonly ILogger<MessagingAsyncRequestHandler>? _logger;
 
-	public MessagingAsyncRequestHandler(SiegeRepository sieges, WalletService wallet,
-		ILogger<MessagingAsyncRequestHandler>? logger = null)
+	public MessagingAsyncRequestHandler(SiegeRepository sieges, WalletService wallet, SiegeAttacks attacks,
+		SiegePayments payments, ILogger<MessagingAsyncRequestHandler>? logger = null)
 	{
 		_sieges = sieges;
 		_wallet = wallet;
+		_attacks = attacks;
+		_payments = payments;
 		_logger = logger;
 	}
 
@@ -79,8 +87,10 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 				Messaging.ReqType_CreateListing => await Create(context, Read<CreateRequest>(json)),
 				Messaging.ReqType_ActivateListing => await Activate(context, Read<SiegeIdRequest>(json)),
 				Messaging.ReqType_RemoveListing => await Remove(context, Read<SiegeIdRequest>(json)),
-				_ when requestType is not null && AttackRequests.Contains(requestType) =>
-					Refuse("Siege attacks aren't available on this server yet."),
+				Messaging.ReqType_ChallengeListing => await Challenge(context, Read<ChallengeRequest>(json)),
+				Messaging.ReqType_Forfeit => await Forfeit(context, Read<SiegeIdRequest>(json)),
+				_ when requestType is not null && NotAvailableRequests.Contains(requestType) =>
+					Refuse("That part of Siege isn't available on this server yet."),
 				_ => Refuse($"Unknown Siege request '{requestType}'.")
 			};
 
@@ -214,6 +224,9 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		if (defense is null || defense.PlayerProfileId != context.ProfileId)
 			return Refuse("That defense doesn't exist.");
 
+		if (_attacks.TryGetBySiege(defense.Id, out _))
+			return Refuse("Your defense is under attack right now. You can withdraw it once the attack is over.");
+
 		var closed = await _sieges.CloseAsync(defense.Id, Now());
 		if (closed is null)
 			return Refuse("That defense is already closed.");
@@ -224,6 +237,142 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		_logger?.LogInformation("Siege: {user} withdrew defense {id} and got back {pot} {currency}", context.UserName,
 			closed.Id, closed.Pot, closed.Currency);
 		return new Messaging.Remove.Response { Updated = ToBits(closed) };
+	}
+
+	// Begin Siege. The attacker pays up front (Fee to the defender, Bet onto the bounty, the rest burned), the defense goes
+	// INGAME so nobody else can attack it, and the CHALLENGE row is logged. After the reply, the "siege:challenge" event
+	// moves the attacker to the assault screen with the countdown to the first game.
+	private async Task<object> Challenge(SessionContext context, ChallengeRequest request)
+	{
+		var defense = await _sieges.GetAsync(request.SiegeId);
+		if (defense is null || defense.Status != SiegeStatus.Active || _attacks.TryGetBySiege(request.SiegeId, out _))
+			return Refuse("That defense isn't open to attack right now.");
+		if (defense.PlayerProfileId == context.ProfileId)
+			return Refuse("You can't attack your own defense.");
+		if (_attacks.IsAttacking(context.ProfileId))
+			return Refuse("You're already attacking another defense.");
+		if (!IsPlayableDeck(request.Deck))
+			return Refuse("Pick a complete deck, with a champion and cards, to attack with.");
+
+		var cost = CostOf(defense.Pot);
+		var currencyName = defense.Currency.ToString().ToLowerInvariant();
+		if (!_payments.TryChargeAttack(context.ProfileId, defense.PlayerProfileId, defense.Currency, cost))
+			return Refuse($"Attacking this defense costs {cost.Total} {currencyName}, and you don't have enough.");
+
+		var attack = new SiegeAttacks.Attack
+		{
+			SiegeId = defense.Id,
+			AttackerId = context.ProfileId,
+			AttackerName = context.UserName ?? "",
+			Deck = request.Deck!.Value.Clone(),
+			Session = context
+		};
+		var started = _attacks.TryAdd(attack)
+			? await _sieges.TryStartAttackAsync(defense.Id, cost.Bet, new SiegeLedger
+			{
+				Action = SiegeAction.Challenge,
+				PlayerProfileId = context.ProfileId,
+				PlayerName = attack.AttackerName,
+				PlayerDeck = Compressor.Compress(JsonSerializer.SerializeToUtf8Bytes(attack.Deck)),
+				Escrow = SiegeEscrow.Funded,
+				Bet = cost.Bet,
+				Fee = cost.Fee,
+				Rake = cost.Rake,
+				Created = Now()
+			})
+			: null;
+		if (started is null)
+		{
+			// Someone else got there first.
+			_attacks.Remove(attack);
+			_payments.RefundAttack(context.ProfileId, defense.PlayerProfileId, defense.Currency, cost);
+			return Refuse("That defense isn't open to attack right now.");
+		}
+
+		_logger?.LogInformation("Siege: {user} attacks {defender}'s defense {id} for {cost} {currency} (bounty now {pot})",
+			context.UserName, started.PlayerName, started.Id, cost.Total, currencyName, started.Pot);
+
+		// The event must reach the client after this reply, so it goes out a moment later.
+		var challengeEvent = ChallengeEvent(started, attack.Seq, Now() + Intermission);
+		_ = Task.Run(async () =>
+		{
+			await Task.Delay(TimeSpan.FromMilliseconds(500));
+			if (!context.TrySendMessageToClient(challengeEvent))
+				_logger?.LogWarning("Siege: couldn't send the assault screen to {user}", attack.AttackerName);
+		});
+
+		return new Messaging.Challenge.Response { Status = "OK" };
+	}
+
+	// Abandon an attack. The defense counts it as defended and goes back to ACTIVE; the attacker's payment isn't returned.
+	// An attack the server forgot (it restarted mid-attack) leaves its defense INGAME; the attacker on its last
+	// CHALLENGE row can forfeit that one too, which is how such a defense gets unstuck.
+	private async Task<object> Forfeit(SessionContext context, SiegeIdRequest request)
+	{
+		var defense = await _sieges.GetAsync(request.SiegeId);
+		if (defense is null || defense.Status != SiegeStatus.InGame)
+			return Refuse("There's no attack on that defense to forfeit.");
+
+		var seq = 0;
+		if (_attacks.TryGetBySiege(defense.Id, out var attack))
+		{
+			if (attack.AttackerId != context.ProfileId)
+				return Refuse("That isn't your attack.");
+			seq = attack.Seq;
+		}
+		else
+		{
+			var lastChallenge = (await _sieges.GetLedgerAsync(defense.Id)).FirstOrDefault(l => l.Action == SiegeAction.Challenge);
+			if (lastChallenge?.PlayerProfileId != context.ProfileId)
+				return Refuse("That isn't your attack.");
+		}
+
+		var now = Now();
+		var ended = await _sieges.EndAttackDefendedAsync(defense.Id, new SiegeLedger
+		{
+			Action = SiegeAction.Defended,
+			FightSeq = seq,
+			PlayerProfileId = context.ProfileId,
+			PlayerName = context.UserName ?? "",
+			Forfeit = now,
+			Created = now
+		});
+		if (attack is not null)
+			_attacks.Remove(attack);
+		if (ended is null)
+			return Refuse("There's no attack on that defense to forfeit.");
+
+		_logger?.LogInformation("Siege: {user} forfeited the attack on {defender}'s defense {id}", context.UserName,
+			ended.PlayerName, ended.Id);
+		return new Messaging.Forfeit.Response { Status = "OK" };
+	}
+
+	// "siege:challenge" tells the attacker where the attack stands: CurState INTERMISSION with the time of the next game,
+	// or VICTOR. Seq is the number of fights already won; KnownChamps shows the champions met so far plus the next one.
+	// Written by hand: the client reads it with Newtonsoft into SiegeState, whose constructor arguments it can't fill
+	// from our field names, and Source (a UID) is only used to remember the server, so it is left out.
+	private static Messaging.Request ChallengeEvent(Siege defense, int seq, DateTime nextGame, bool victory = false)
+	{
+		using var buffer = new MemoryStream();
+		using (var writer = new Utf8JsonWriter(buffer))
+		{
+			writer.WriteStartObject();
+			writer.WriteString("RequestType", Messaging.Event_SiegeChallenge);
+			writer.WriteStartObject("State");
+			writer.WriteString("nextEval", nextGame.ToString(SiegeDateConverter.Format, CultureInfo.InvariantCulture));
+			writer.WritePropertyName("PubInfo");
+			JsonSerializer.Serialize(writer, ToBits(defense), JsonOptions);
+			writer.WriteNumber("Seq", seq);
+			writer.WriteStartArray("KnownChamps");
+			foreach (var champion in UnpackFights(defense.FightInfo).Take(seq + 1).Select(f => f.GetProperty("Deck").GetProperty("Champ")))
+				champion.WriteTo(writer);
+			writer.WriteEndArray();
+			writer.WriteNumber("CurState", (int)(victory ? Messaging.SiegeState.State.VICTOR : Messaging.SiegeState.State.INTERMISSION));
+			writer.WriteEndObject();
+			writer.WriteEndObject();
+		}
+
+		return new Messaging.Request { Envelope = buffer.ToArray() };
 	}
 
 	private static ErrorArgs Refuse(string message) => new() { Error = 1, ErrorMessage = message };
@@ -268,13 +417,21 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		return Compressor.Compress(buffer.ToArray());
 	}
 
+	// The 3 fights back out of siege_bits.FightInfo, each {Deck, Message}.
+	private static JsonElement[] UnpackFights(byte[] fightInfo)
+	{
+		using var document = JsonDocument.Parse(Compressor.Decompress(fightInfo));
+		return document.RootElement.EnumerateArray().Select(f => f.Clone()).ToArray();
+	}
+
+	// What an attacker pays, split the way the rules text describes: a fee to the defender, a bet added to the bounty,
+	// and the rest burned (the rake).
+	private static SiegeCost CostOf(int pot) =>
+		SiegeCost.For(pot, Fees.ChallengeCostPotPct, Fees.ChallengePotFeePct, Fees.ChallengePotBetPct);
+
 	private static siege_bits ToBits(Siege defense)
 	{
-		// What an attacker pays, split the way the rules text describes: a fee to the defender, a bet added to the
-		// bounty, and the rest burned (the rake).
-		var cost = (int)Math.Round(defense.Pot * Fees.ChallengeCostPotPct);
-		var fee = (int)Math.Round(cost * Fees.ChallengePotFeePct);
-		var bet = (int)Math.Round(cost * Fees.ChallengePotBetPct);
+		var cost = CostOf(defense.Pot);
 
 		return new siege_bits
 		{
@@ -289,9 +446,9 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			Loss = defense.Loss,
 			Pot = defense.Pot,
 			ChallengeLimit = defense.ChallengeLimit,
-			ChallengeFee = fee,
-			ChallengeBet = bet,
-			ChallengeRake = cost - fee - bet,
+			ChallengeFee = cost.Fee,
+			ChallengeBet = cost.Bet,
+			ChallengeRake = cost.Rake,
 			Currency = (siege_bits.CurrencyType)defense.Currency,
 			CloseDate = defense.CloseDate,
 			LastChallengeDate = defense.LastChallengeDate,
@@ -352,13 +509,15 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 	// Deck stays raw JSON: the server only checks it and stores it, and passing it through untouched keeps every field.
 	private sealed record FightRequest(JsonElement? Deck, string? Message);
 
+	private sealed record ChallengeRequest(ulong SiegeId, JsonElement? Deck, ulong DebugReckId);
+
 	private sealed record CreateRequest(Messaging.Create.Currency Cur, int PotAmount, FightRequest[]? Fights,
 		int ChallengeLimit, ulong DebugReckId);
 
 	// Writes dates the way the client's SimpleDateTime converter reads them.
 	private sealed class SiegeDateConverter : JsonConverter<DateTime>
 	{
-		private const string Format = "yyyy-MM-dd HH:mm:ss";
+		public const string Format = "yyyy-MM-dd HH:mm:ss";
 
 		public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
 			DateTime.ParseExact(reader.GetString()!, Format, CultureInfo.InvariantCulture);

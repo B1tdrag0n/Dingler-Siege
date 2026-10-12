@@ -98,6 +98,51 @@ public sealed class SiegeRepository : BaseRepository<GameDataContext>
 	}
 
 	/// <summary>
+	/// Starts an attack: an ACTIVE defense that isn't the attacker's own goes INGAME, its bounty grows by the attacker's
+	/// bet and the CHALLENGE row is logged. Returns null (and changes nothing) if the defense isn't open to attack.
+	/// </summary>
+	public Task<Siege?> TryStartAttackAsync(ulong siegeId, int bet, SiegeLedger challenge)
+	{
+		return EnqueueWriteAsync<Siege?>(async context =>
+		{
+			var siege = await context.Sieges.FindAsync(siegeId).ConfigureAwait(false);
+			if (siege is null || siege.Status != SiegeStatus.Active || siege.PlayerProfileId == challenge.PlayerProfileId)
+				return null;
+
+			siege.Status = SiegeStatus.InGame;
+			siege.StatusDate = challenge.Created;
+			siege.LastChallengeDate = challenge.Created;
+			siege.ChallengeCount++;
+			siege.Pot += bet;
+			challenge.Siege = siege;
+			context.SiegeLedger.Add(challenge);
+			return siege;
+		});
+	}
+
+	/// <summary>
+	/// Ends an attack the defense won: back to ACTIVE with one more win, and the DEFENDED row logged. The row's Wins is
+	/// the count before this one (the client adds 1). Returns null if the defense isn't INGAME.
+	/// </summary>
+	public Task<Siege?> EndAttackDefendedAsync(ulong siegeId, SiegeLedger defended)
+	{
+		return EnqueueWriteAsync<Siege?>(async context =>
+		{
+			var siege = await context.Sieges.FindAsync(siegeId).ConfigureAwait(false);
+			if (siege is null || siege.Status != SiegeStatus.InGame)
+				return null;
+
+			defended.Wins = siege.Wins;
+			siege.Status = SiegeStatus.Active;
+			siege.StatusDate = defended.Created;
+			siege.Wins++;
+			defended.Siege = siege;
+			context.SiegeLedger.Add(defended);
+			return siege;
+		});
+	}
+
+	/// <summary>
 	/// Withdraws an open defense and logs it. Returns null if there is no such defense or it is already closed.
 	/// </summary>
 	public Task<Siege?> CloseAsync(ulong siegeId, DateTime when)
