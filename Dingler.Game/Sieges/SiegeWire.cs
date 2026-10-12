@@ -25,7 +25,7 @@ public static class SiegeWire
 	public static readonly Messaging.FeeDetail Fees = new(1000, 50, 0.4f, 0.5f, 0.375f);
 
 	// The wait on the assault screen before each game.
-	public static readonly TimeSpan Intermission = TimeSpan.FromSeconds(10);
+	public static readonly TimeSpan Intermission = TimeSpan.FromSeconds(30);
 
 	// The client reads replies with Newtonsoft.Json: public fields, exact field names, and enums as names or numbers.
 	// Its Siege dates must be "yyyy-MM-dd HH:mm:ss", and a missing date is left out rather than sent as null.

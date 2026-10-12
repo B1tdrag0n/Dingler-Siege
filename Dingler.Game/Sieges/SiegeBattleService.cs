@@ -55,7 +55,7 @@ public sealed class SiegeBattleService
 	private readonly ConcurrentDictionary<ulong, PendingGame> _pending = new();   // by attacker profile id
 	private readonly ConcurrentDictionary<ulong, ActiveGame> _active = new();     // by attacker profile id
 
-	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(4);
+	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(5);
 
 	public SiegeBattleService(SiegeAttacks attacks, SiegePayments payments, IServiceScopeFactory scopes,
 		ILogger<SiegeBattleService>? logger = null)
