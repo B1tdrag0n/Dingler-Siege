@@ -54,6 +54,9 @@ public sealed class SiegeBattleService
 	private readonly ILogger<SiegeBattleService>? _logger;
 	private readonly ConcurrentDictionary<ulong, PendingGame> _pending = new();   // by attacker profile id
 	private readonly ConcurrentDictionary<ulong, ActiveGame> _active = new();     // by attacker profile id
+	private readonly ConcurrentDictionary<ulong, Func<Task>> _afterGame = new();  // by attacker profile id, see AfterEndScreen
+
+	private static readonly TimeSpan EndScreenTimeout = TimeSpan.FromSeconds(90);
 
 	public SiegeBattleService(SiegeAttacks attacks, SiegePayments payments, IServiceScopeFactory scopes,
 		ILogger<SiegeBattleService>? logger = null)
@@ -291,7 +294,7 @@ public sealed class SiegeBattleService
 			// An engine crash or a stuck AI isn't the attacker's fault: the same fight again (as the arena does).
 			_logger?.LogWarning("Siege: fight {seq} on defense {id} voided ({reason}); it will be replayed", seq + 1,
 				attack.SiegeId, voidReason ?? "no winner");
-			await NextCountdownAsync(sieges, attack);
+			AfterEndScreen(attack.AttackerId, () => NextCountdownAsync(attack));
 			return;
 		}
 
@@ -316,7 +319,7 @@ public sealed class SiegeBattleService
 		attack.Seq = seq + 1;
 		if (attack.Seq < FightsPerDefense)
 		{
-			await NextCountdownAsync(sieges, attack);
+			AfterEndScreen(attack.AttackerId, () => NextCountdownAsync(attack));
 			return;
 		}
 
@@ -340,15 +343,62 @@ public sealed class SiegeBattleService
 		}
 
 		_payments.PayBounty(attack.AttackerId, defeated.Currency, defeated.Pot);
-		attack.Session.TrySendMessageToClient(ChallengeEvent(defeated, FightsPerDefense, Now(), victory: true));
+		var victory = ChallengeEvent(defeated, FightsPerDefense, Now(), victory: true);
+		AfterEndScreen(attack.AttackerId, () =>
+		{
+			attack.Session.TrySendMessageToClient(victory);
+			return Task.CompletedTask;
+		});
 		_logger?.LogInformation("Siege: {user} defeated {defender}'s defense {id} and won {pot} {currency}",
 			attack.AttackerName, defeated.PlayerName, defeated.Id, defeated.Pot, defeated.Currency);
 	}
 
-	// Back to the assault screen with the countdown, then the next (or the same, after a void) fight.
-	private async Task NextCountdownAsync(SiegeRepository sieges, SiegeAttacks.Attack attack)
+	// A "siege:challenge" event moves the client to the assault screen at once, even out of the game's end screen, so
+	// after a game the next one waits until the attacker is back on a Siege screen (their client then sends a Siege
+	// request, e.g. feeinfo), or until EndScreenTimeout if it never comes.
+	private void AfterEndScreen(ulong attackerId, Func<Task> next)
 	{
-		var defense = await sieges.GetAsync(attack.SiegeId);
+		_afterGame[attackerId] = next;
+		_ = Task.Run(async () =>
+		{
+			await Task.Delay(EndScreenTimeout);
+			await RunAfterGameAsync(attackerId, next);
+		});
+	}
+
+	/// <summary>The attacker's client sent a Siege request: it has left the game's end screen.</summary>
+	public void OnSiegeRequest(SessionContext context)
+	{
+		if (!_afterGame.TryGetValue(context.ProfileId, out var next))
+			return;
+		_ = Task.Run(async () =>
+		{
+			await Task.Delay(TimeSpan.FromMilliseconds(500));   // after the reply to that request
+			await RunAfterGameAsync(context.ProfileId, next);
+		});
+	}
+
+	private async Task RunAfterGameAsync(ulong attackerId, Func<Task> next)
+	{
+		if (!_afterGame.TryRemove(new KeyValuePair<ulong, Func<Task>>(attackerId, next)))
+			return;   // already sent
+		try
+		{
+			await next();
+		}
+		catch (Exception ex)
+		{
+			_logger?.LogError(ex, "Siege: sending the next step of an attack to its attacker failed");
+		}
+	}
+
+	// Back to the assault screen with the countdown, then the next (or the same, after a void) fight.
+	private async Task NextCountdownAsync(SiegeAttacks.Attack attack)
+	{
+		if (!_attacks.TryGetBySiege(attack.SiegeId, out var current) || current != attack)
+			return;   // forfeited or disconnected meanwhile
+		using var scope = _scopes.CreateScope();
+		var defense = await scope.ServiceProvider.GetRequiredService<SiegeRepository>().GetAsync(attack.SiegeId);
 		if (defense is null)
 			return;
 		var next = Now() + Intermission;

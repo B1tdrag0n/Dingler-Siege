@@ -61,6 +61,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			var json = Encoding.UTF8.GetString(request.Envelope ?? []);
 			var requestType = ReadRequestType(json);
 			_logger?.LogDebug("Siege: {type} from {user}: {json}", requestType, context.UserName, json);
+			_battles.OnSiegeRequest(context);
 
 			object reply = requestType switch
 			{
