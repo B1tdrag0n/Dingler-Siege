@@ -276,6 +276,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 
 		_logger?.LogInformation("Siege: {user} attacks {defender}'s defense {id} for {cost} {currency} (bounty now {pot})",
 			context.UserName, started.PlayerName, started.Id, cost.Total, currencyName, started.Pot);
+		context.Disconnected += () => _battles.OnAttackerDisconnected(attack);
 
 		// The event must reach the client after this reply, so it goes out a moment later. Fight 1 follows the countdown.
 		var firstGame = Now() + Intermission;
@@ -292,43 +293,14 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 	}
 
 	// Abandon an attack. The defense counts it as defended and goes back to ACTIVE; the attacker's payment isn't returned.
-	// An attack the server forgot (it restarted mid-attack) leaves its defense INGAME; the attacker on its last
-	// CHALLENGE row can forfeit that one too, which is how such a defense gets unstuck.
 	private async Task<object> Forfeit(SessionContext context, SiegeIdRequest request)
 	{
-		var defense = await _sieges.GetAsync(request.SiegeId);
-		if (defense is null || defense.Status != SiegeStatus.InGame)
+		if (!_attacks.TryGetBySiege(request.SiegeId, out var attack))
 			return Refuse("There's no attack on that defense to forfeit.");
+		if (attack.AttackerId != context.ProfileId)
+			return Refuse("That isn't your attack.");
 
-		var seq = 0;
-		if (_attacks.TryGetBySiege(defense.Id, out var attack))
-		{
-			if (attack.AttackerId != context.ProfileId)
-				return Refuse("That isn't your attack.");
-			seq = attack.Seq;
-		}
-		else
-		{
-			var lastChallenge = (await _sieges.GetLedgerAsync(defense.Id)).FirstOrDefault(l => l.Action == SiegeAction.Challenge);
-			if (lastChallenge?.PlayerProfileId != context.ProfileId)
-				return Refuse("That isn't your attack.");
-		}
-
-		var now = Now();
-		var ended = await _sieges.EndAttackDefendedAsync(defense.Id, new SiegeLedger
-		{
-			Action = SiegeAction.Defended,
-			FightSeq = seq,
-			PlayerProfileId = context.ProfileId,
-			PlayerName = context.UserName ?? "",
-			Forfeit = now,
-			Created = now
-		});
-		if (attack is not null)
-		{
-			_attacks.Remove(attack);
-			_battles.Abandon(attack);
-		}
+		var ended = await _battles.ForfeitAsync(_sieges, attack);
 		if (ended is null)
 			return Refuse("There's no attack on that defense to forfeit.");
 

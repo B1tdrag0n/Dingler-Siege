@@ -6,8 +6,8 @@ namespace Dingler.Game.Sieges;
 
 /// <summary>
 /// The attacks running right now, in memory: one per defense and one per attacker. The defense's row in the database
-/// says INGAME while its attack is here. A server restart forgets the attacks; their defenses stay INGAME until the
-/// attacker forfeits (or the defender withdraws), see MessagingAsyncRequestHandler.Forfeit.
+/// says INGAME while its attack is here. A server restart forgets the attacks; SiegeStartupCleanup then ends their
+/// defenses' attacks as forfeited.
 /// </summary>
 public sealed class SiegeAttacks
 {
@@ -50,5 +50,6 @@ public sealed class SiegeAttacks
 
 	public bool IsAttacking(ulong attackerId) => _bySiege.Values.Any(a => a.AttackerId == attackerId);
 
-	public void Remove(Attack attack) => _bySiege.TryRemove(new KeyValuePair<ulong, Attack>(attack.SiegeId, attack));
+	/// <summary>False if the attack had already ended.</summary>
+	public bool Remove(Attack attack) => _bySiege.TryRemove(new KeyValuePair<ulong, Attack>(attack.SiegeId, attack));
 }

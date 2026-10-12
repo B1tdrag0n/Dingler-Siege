@@ -92,6 +92,7 @@ namespace Dingler.Game.CompositionRoot
                     .AddSqliteDbContext<GameDataContext>(connectionString)
                     .AddScopedAsyncStartupService<TournamentManager>()
                     .AddScopedAsyncStartupService<SessionService>()
+                    .AddScopedAsyncStartupService<Dingler.Game.Sieges.SiegeStartupCleanup>()
                     .AddScoped<ChatManager>()
                     .AddScoped<ChatRoomFactory>()
                     .AddScoped<TournamentCommunicator>()

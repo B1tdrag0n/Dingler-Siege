@@ -194,8 +194,57 @@ public sealed class SiegeBattleService
 
 	public bool TryGetActive(SessionContext context, out ActiveGame game) => _active.TryGetValue(context.ProfileId, out game!);
 
-	/// <summary>The attack was forfeited outside a game: forget its waiting game, and concede a running one.</summary>
-	public void Abandon(SiegeAttacks.Attack attack)
+	/// <summary>
+	/// Ends the attack without playing it out: the attacker forfeited or left. The defense counts it as defended and goes
+	/// back to ACTIVE; the attacker's payment isn't returned. Null if the attack had already ended.
+	/// </summary>
+	public async Task<Siege?> ForfeitAsync(SiegeRepository sieges, SiegeAttacks.Attack attack)
+	{
+		if (!_attacks.Remove(attack))
+			return null;
+		Abandon(attack);
+
+		var now = Now();
+		return await sieges.EndAttackDefendedAsync(attack.SiegeId, new SiegeLedger
+		{
+			Action = SiegeAction.Defended,
+			FightSeq = attack.Seq,
+			PlayerProfileId = attack.AttackerId,
+			PlayerName = attack.AttackerName,
+			Forfeit = now,
+			Created = now
+		});
+	}
+
+	/// <summary>
+	/// The attacker's connection closed. Their client can't find its way back into the attack, so it counts as a forfeit;
+	/// otherwise the defense would stay locked (INGAME) with nobody able to finish or forfeit the attack.
+	/// </summary>
+	public void OnAttackerDisconnected(SiegeAttacks.Attack attack)
+	{
+		if (!_attacks.TryGetBySiege(attack.SiegeId, out var current) || current != attack)
+			return;
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				using var scope = _scopes.CreateScope();
+				var ended = await ForfeitAsync(scope.ServiceProvider.GetRequiredService<SiegeRepository>(), attack);
+				if (ended is not null)
+					_logger?.LogInformation("Siege: {user} disconnected during fight {seq} of the attack on {defender}'s defense {id}; it counts as forfeited",
+						attack.AttackerName, attack.Seq + 1, ended.PlayerName, ended.Id);
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogError(ex, "Siege: ending the attack on defense {id} after {user} disconnected failed",
+					attack.SiegeId, attack.AttackerName);
+			}
+		});
+	}
+
+	// Forget the attack's waiting game, and concede a running one.
+	private void Abandon(SiegeAttacks.Attack attack)
 	{
 		if (_pending.TryGetValue(attack.AttackerId, out var pending) && pending.Attack == attack)
 			_pending.TryRemove(new KeyValuePair<ulong, PendingGame>(attack.AttackerId, pending));
@@ -248,7 +297,8 @@ public sealed class SiegeBattleService
 
 		if (!won)
 		{
-			_attacks.Remove(attack);
+			if (!_attacks.Remove(attack))
+				return;
 			var now = Now();
 			var defended = await sieges.EndAttackDefendedAsync(attack.SiegeId, new SiegeLedger
 			{
@@ -271,7 +321,8 @@ public sealed class SiegeBattleService
 		}
 
 		// All 3 won: the defense falls and its bounty goes to the attacker.
-		_attacks.Remove(attack);
+		if (!_attacks.Remove(attack))
+			return;
 		var defeated = await sieges.EndAttackDefeatedAsync(attack.SiegeId, new SiegeLedger
 		{
 			Action = SiegeAction.Defeated,
