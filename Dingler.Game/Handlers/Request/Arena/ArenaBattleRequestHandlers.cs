@@ -17,15 +17,40 @@ namespace Dingler.Game.Handlers.Request.Arena;
 // this path in Dingler (tournament games start through TournamentSessionStart / ReadyForGameSetup instead), and Siege
 // fights: after "siege:gstart" the client asks for its game the same way, so a waiting Siege game is served first.
 
-// 22019: must fail; the client then asks StartEncounter for a flag-128 encounter.
+// 22019: for an arena battle it must fail; the client then asks StartEncounter for a flag-128 encounter. A Siege fight
+// is found here instead: its client carries no encounter data, so after a failed FindSession it would send StartSession
+// (which Dingler doesn't answer, and the client waits forever). Found, it goes straight on to JoinSession.
 [Authenticated]
 public sealed class FindSessionRequestHandler : IRequestHandler<FindSessionRequestArgs, FindSessionResponse>
 {
-	public FindSessionResponse HandleRequest(SessionContext context, FindSessionRequestArgs request) => new()
+	private readonly SiegeBattleService _siege;
+	private readonly GameManager _games;
+	private readonly ILogger<FindSessionRequestHandler>? _logger;
+
+	public FindSessionRequestHandler(SiegeBattleService siege, GameManager games, ILogger<FindSessionRequestHandler>? logger = null)
 	{
-		Success = false,
-		RoutingPlayerId = ArenaBattleService.HumanId(context),
-	};
+		_siege = siege;
+		_games = games;
+		_logger = logger;
+	}
+
+	public FindSessionResponse HandleRequest(SessionContext context, FindSessionRequestArgs request)
+	{
+		var human = ArenaBattleService.HumanId(context);
+		try
+		{
+			if (_siege.TryReserve(context, _games, out var siegeState))
+			{
+				_logger?.LogInformation("Siege: {user}'s client found its fight ({session})", context.UserName, siegeState.SessionName);
+				return new FindSessionResponse { Success = true, RoutingPlayerId = human, SessionState = siegeState };
+			}
+		}
+		catch (Exception ex)
+		{
+			_logger?.LogError(ex, "Siege: FindSession failed for {user}", context.UserName);
+		}
+		return new FindSessionResponse { Success = false, RoutingPlayerId = human };
+	}
 }
 
 // 22017: reserve a battle for the run's current fight and describe its session. Answer Success = true whenever
