@@ -55,17 +55,30 @@ public sealed class DecodeMiddleware : IMiddleware<RequestContext>
 		}
 		else
 		{
-			var wrapper = EncData.Decode<DataWrapper>(context.RawRequest);
-
-			context.SetDataType(wrapper.DataType);
-			context.SetRequestId(wrapper.RequestId);
-
-			if (wrapper.Comp == 1)
+			try
 			{
-				wrapper.Bytes = Compressor.Decompress(wrapper.Bytes);
-			}
+				var wrapper = EncData.Decode<DataWrapper>(context.RawRequest);
 
-			context.RequestObject = EncData.Decode(wrapper.Bytes);
+				context.SetDataType(wrapper.DataType);
+				context.SetRequestId(wrapper.RequestId);
+
+				if (wrapper.Comp == 1)
+				{
+					wrapper.Bytes = Compressor.Decompress(wrapper.Bytes);
+				}
+
+				context.RequestObject = EncData.Decode(wrapper.Bytes);
+			}
+			catch (Exception ex) when (ex is not InvalidOperationException)
+			{
+				// A message we can't read used to end the player's connection. Now it's skipped and described in the log
+				// (DinglerClient logs InvalidOperationException and goes on with the next message).
+				var raw = context.RawRequest;
+				var start = Convert.ToHexString(raw, 0, Math.Min(raw.Length, 48));
+				throw new InvalidOperationException(
+					$"Skipped a message that couldn't be decoded ({ex.GetType().Name}: {ex.Message}). Header {header}; " +
+					$"body {raw.Length} bytes starting {start}");
+			}
 		}
 
 		await next(context, token)

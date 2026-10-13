@@ -16,6 +16,7 @@ using Dingler.Game.Protocol.Messages.Args;
 using Dingler.Game.Protocol.Messages.Json;
 using Dingler.Game.Protocol.Messages.Metadata;
 using Dingler.Game.Protocol.Rooms.Models;
+using HexGame::Game.Shared.Campaign.Siege;
 using HexGame::Game.Shared.Mail.Messages;
 using HexGame::Game.Shared.Network;
 using HexGame::Game.Shared.Network.Campaign;
@@ -153,6 +154,7 @@ public sealed class EncodeMiddleware : IMiddleware<RequestContext>
 		{ typeof(TournamentByeReceivedEventArgs), 25074 },
 		{ typeof(TournamentOpponentOfflineEventArgs), 25075 },
 		{ typeof(TournamentReceivePrizeEventArgs), 25076 },
+		{ typeof(Messaging.Request), 150000 },   // Siege events (siege:challenge, siege:gstart, siege:saction)
 	};
 
 	public async Task InvokeAsync(RequestContext context, PipelineBuilder<RequestContext>.MiddlewareDelegate next,

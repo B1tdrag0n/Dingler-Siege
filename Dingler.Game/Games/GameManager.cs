@@ -136,11 +136,13 @@ public sealed class GameManager : IDisposable
 	/// client's own AI (a type-248 seat with the arena opponent's deck), under session flag 128. The game is built and
 	/// started here, on the calling thread, before its engine pump runs; the pump starts at once and waits until the
 	/// player says they're ready (ReadyToStartGame). Clocks per design 03 D17-A.
+	/// Siege fights use it too (session flag IsSiege): the AI then plays a player's deck, given as aiDeck instead of
+	/// aiDeckTemplateId, and there are no battle mods.
 	/// </summary>
 	public HexGameWrapper CreateArenaGame(ulong gameId, string sessionName, SessionStateEncounterData encounterData,
 		UID humanId, deck_bits humanDeck, string userName, List<ETurnPhases>? selfStops, List<ETurnPhases>? opponentStops,
 		UID aiId, ResourceId aiDeckTemplateId, List<EncounterModBase> battleMods,
-		Action<HexRulesEngine, List<UID>, List<UID>> onGameEnded)
+		Action<HexRulesEngine, List<UID>, List<UID>> onGameEnded, deck_bits? aiDeck = null)
 	{
 		var engine = new HexRulesEngine(sessionName, new UID(UID.Type.AuthoritativeSession, gameId),
 			_loggerFactory?.CreateLogger<HexRulesEngine>())
@@ -177,7 +179,7 @@ public sealed class GameManager : IDisposable
 			wrapper.TryAddPlayer(human);
 			wrapper.TryAddPlayer(ai);
 			engine.AttachAiSeat(new Dingler.Game.Arena.Ai.ArenaAiSeat(engine, ai, human, _loggerFactory?.CreateLogger("ArenaAi")));
-			engine.StartArenaGame(human, humanDeck, userName, ai);
+			engine.StartArenaGame(human, humanDeck, userName, ai, aiDeck);
 		}
 		catch (Exception ex)
 		{

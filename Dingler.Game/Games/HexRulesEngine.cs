@@ -105,7 +105,7 @@ public sealed partial class HexRulesEngine : AuthoritativeSessionBase, IDisposab
 					{
 						try
 						{
-							if (IsPvEArena())
+							if (IsPvEArena() || IsSiegeBattle)
 							{
 								_voidRequested = true;
 								VoidReason ??= "engine-exception: " + ex.Message;

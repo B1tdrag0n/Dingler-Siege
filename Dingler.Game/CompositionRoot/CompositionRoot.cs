@@ -68,6 +68,11 @@ namespace Dingler.Game.CompositionRoot
                 var wallet = new Dingler.Game.Wallet.WalletService();
                 sc.AddSingleton(wallet);
 
+                // Siege attacks in progress, and the attack payments (the one place they touch the wallet).
+                sc.AddSingleton<Dingler.Game.Sieges.SiegeAttacks>();
+                sc.AddSingleton<Dingler.Game.Sieges.SiegePayments>();
+                sc.AddSingleton<Dingler.Game.Sieges.SiegeBattleService>();
+
                 sc.AddSingletonStartupService(_ => new CollectionCacheService(gameDataLocation, arenaRunStore, wallet))
                     .AddHttpClient("AuthClient", (sp, client) =>
                     {
@@ -87,6 +92,7 @@ namespace Dingler.Game.CompositionRoot
                     .AddSqliteDbContext<GameDataContext>(connectionString)
                     .AddScopedAsyncStartupService<TournamentManager>()
                     .AddScopedAsyncStartupService<SessionService>()
+                    .AddScopedAsyncStartupService<Dingler.Game.Sieges.SiegeStartupCleanup>()
                     .AddScoped<ChatManager>()
                     .AddScoped<ChatRoomFactory>()
                     .AddScoped<TournamentCommunicator>()
