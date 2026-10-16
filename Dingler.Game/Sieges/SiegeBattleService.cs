@@ -322,6 +322,19 @@ public sealed class SiegeBattleService
 		attack.Seq = seq + 1;
 		if (attack.Seq < FightsPerDefense)
 		{
+			// The client's end-of-game splash reads VICTORY or DEFEAT from the newest "siege:saction" it has (VICTORY only
+			// for DEFEATED). Without a fresh one it shows whatever came last, e.g. DEFEAT left over from an earlier lost
+			// attack. So a won fight tells the attacker DEFEATED for this one fight; it isn't saved, and the defense
+			// stays under attack.
+			attack.Session.TrySendMessageToClient(ActionEvent(new SiegeLedger
+			{
+				SiegeId = attack.SiegeId,
+				Action = SiegeAction.Defeated,
+				FightSeq = seq,
+				PlayerProfileId = attack.AttackerId,
+				PlayerName = attack.AttackerName,
+				Created = Now()
+			}));
 			CountdownAfterGame(attack);
 			return;
 		}
