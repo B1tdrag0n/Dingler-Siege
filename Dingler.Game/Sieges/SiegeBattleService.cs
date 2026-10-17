@@ -57,9 +57,10 @@ public sealed class SiegeBattleService
 	private readonly ConcurrentDictionary<ulong, PendingGame> _pending = new();   // by attacker profile id
 	private readonly ConcurrentDictionary<ulong, ActiveGame> _active = new();     // by attacker profile id
 
-	// Kept short on purpose: a Continue click on the end-of-game banner before the countdown arrives opens the client's
-	// attack results splash (VICTORY or DEFEAT from the last "siege:saction"), which is wrong between fights.
-	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(3);
+	// Only long enough for the game's end to reach the client first. Any Continue (or Space, Enter, Esc) on the
+	// end-of-game banner before the countdown arrives opens the client's attack results splash (VICTORY or DEFEAT from
+	// the last "siege:saction"), which is wrong between fights, so the banner must not stay up long enough to press.
+	private static readonly TimeSpan EndScreenPause = TimeSpan.FromMilliseconds(500);
 
 	public SiegeBattleService(SiegeAttacks attacks, SiegePayments payments, IServiceScopeFactory scopes,
 		ILogger<SiegeBattleService>? logger = null)
@@ -410,8 +411,8 @@ public sealed class SiegeBattleService
 		attack.Seq = seq + 1;
 		if (attack.Seq < FightsPerDefense)
 		{
+			CountdownAfterGame(attack);   // first, so the database write doesn't hold the client on the banner
 			var logged = await sieges.LogFightLostAsync(attack.SiegeId, sackedRow);
-			CountdownAfterGame(attack);
 			return logged ? sackedRow.Id : null;
 		}
 
@@ -445,8 +446,8 @@ public sealed class SiegeBattleService
 
 	// The next fight's countdown. The client only takes it while it is still in the game: there the event moves it to
 	// a fresh assault screen; on the assault screen itself it can't be shown again (UISiege allows no Attack -> Attack
-	// transition). So it goes out shortly after the game ends, leaving the end-of-game banner on screen for a moment.
-	// If the attacker clicks Continue first, UIBattle.Quit opens the results splash instead; the server can't prevent that.
+	// transition). So it goes out right after the game ends: the client skips the end-of-game banner and goes to the doors.
+	// If the attacker leaves the banner first, UIBattle.Quit opens the results splash instead; the server can't prevent that.
 	private void CountdownAfterGame(SiegeAttacks.Attack attack)
 	{
 		_ = Task.Run(async () =>
