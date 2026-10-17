@@ -57,7 +57,7 @@ public sealed class SiegeBattleService
 
 	// Kept short on purpose: a Continue click on the end-of-game banner before the countdown arrives opens the client's
 	// attack results splash (VICTORY or DEFEAT from the last "siege:saction"), which is wrong between fights.
-	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(2);
+	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(3);
 
 	public SiegeBattleService(SiegeAttacks attacks, SiegePayments payments, IServiceScopeFactory scopes,
 		ILogger<SiegeBattleService>? logger = null)
