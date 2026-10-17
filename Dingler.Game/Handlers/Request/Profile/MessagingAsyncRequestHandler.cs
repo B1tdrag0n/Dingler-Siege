@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Dingler.Data.Entities.GameData;
 using Dingler.Data.Enums;
 using Dingler.Data.Repositories;
+using Dingler.Game.Replays;
 using Dingler.Game.Sieges;
 using static Dingler.Game.Sieges.SiegeWire;
 using Dingler.Game.Wallet;
@@ -40,16 +41,19 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 	private readonly SiegeAttacks _attacks;
 	private readonly SiegePayments _payments;
 	private readonly SiegeBattleService _battles;
+	private readonly ReplayRepository _replays;
 	private readonly ILogger<MessagingAsyncRequestHandler>? _logger;
 
 	public MessagingAsyncRequestHandler(SiegeRepository sieges, WalletService wallet, SiegeAttacks attacks,
-		SiegePayments payments, SiegeBattleService battles, ILogger<MessagingAsyncRequestHandler>? logger = null)
+		SiegePayments payments, SiegeBattleService battles, ReplayRepository replays,
+		ILogger<MessagingAsyncRequestHandler>? logger = null)
 	{
 		_sieges = sieges;
 		_wallet = wallet;
 		_attacks = attacks;
 		_payments = payments;
 		_battles = battles;
+		_replays = replays;
 		_logger = logger;
 	}
 
@@ -126,6 +130,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 
 	// The events log. The Defense screen asks by PlayerId for "my latest defense"; by SiegeId for a given one. With no
 	// defense, Siege is left out; Logs and Replays must still be lists because the client loops over both.
+	// Each replay names its fight's log row (LogId); the client shows a watch button on that row, using the first match.
 	private async Task<object> SiegeLog(SiegeLogRequest request)
 	{
 		var defense = request.SiegeId != 0
@@ -136,7 +141,9 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 		{
 			Siege = defense is null ? null! : ToBits(defense),
 			Logs = defense is null ? [] : (await _sieges.GetLedgerAsync(defense.Id)).Select(ToBits).ToArray(),
-			Replays = [] // Milestone 7
+			Replays = defense is null ? [] : (await _replays.GetWatchableForSiegeAsync(defense.Id))
+				.Select(r => new Messaging.SiegeLog.Response.Record { LogId = r.SiegeLedgerId!.Value, Info = ReplayWire.ToRecord(r) })
+				.ToArray()
 		};
 	}
 
@@ -248,6 +255,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			SiegeId = defense.Id,
 			AttackerId = context.ProfileId,
 			AttackerName = context.UserName ?? "",
+			DefenderName = defense.PlayerName,
 			Deck = request.Deck!.Value.Clone(),
 			Fights = UnpackFights(defense.FightInfo),
 			Session = context

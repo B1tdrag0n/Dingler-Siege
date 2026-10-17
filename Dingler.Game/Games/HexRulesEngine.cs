@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using Dingler.Game.Cards;
 using Dingler.Game.GameObjects;
 using Dingler.Game.GameObjects.TrackedGameZones;
+using Dingler.Game.Replays;
 using Dingler.Game.Services;
 using HexGame::Game.Shared;
 using HexGame::Game.Shared.Domain;
@@ -45,6 +46,9 @@ public sealed partial class HexRulesEngine : AuthoritativeSessionBase, IDisposab
 	}
 	
 	public bool IsGameEnded { get; private set; }
+
+	/// <summary>Records the game for a replay when set (Siege fights). Set before the game starts.</summary>
+	public ReplayRecorder? Recorder { get; init; }
 
 	public HexRulesEngine(string sesName, UID sesId, ILogger<HexRulesEngine>? logger = null) :
 		this(sesName, sesId, (ulong)DateTime.Now.Ticks, (ulong)Guid.NewGuid().GetHashCode(), logger)
@@ -158,6 +162,20 @@ public sealed partial class HexRulesEngine : AuthoritativeSessionBase, IDisposab
 	
 	public override void DispatchSessionEvent(Player player, SessionEventArgs args)
 	{
+		// Before the AI seat takes its events away, so a replay has both sides.
+		if (Recorder is not null)
+		{
+			try
+			{
+				Recorder.Record(player.m_PlayerId, args);
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogWarning(ex, "Replay: couldn't record {EventType} for player {PlayerId}",
+					args.GetType().Name, player.m_PlayerId);
+			}
+		}
+
 		if (IsAiSeat(player))
 		{
 			AiSeat!.Enqueue(args);

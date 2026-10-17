@@ -225,6 +225,66 @@ namespace Dingler.Data.Migrations.GameData
                         });
                 });
 
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.GameReplay", b =>
+                {
+                    b.Property<ulong>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("Ended")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("EventCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("FightSeq")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong>("GameId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Player1Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<ulong>("Player1Uid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Player2Name")
+                        .HasColumnType("TEXT");
+
+                    b.Property<ulong>("Player2Uid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ReplayFile")
+                        .HasColumnType("BLOB");
+
+                    b.Property<string>("SessionName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<ulong>("SessionUid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong?>("SiegeId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong?>("SiegeLedgerId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("Started")
+                        .HasColumnType("TEXT");
+
+                    b.Property<ulong>("WinnerUid")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex(new[] { "SiegeId" }, "IX_GameReplays_SiegeId");
+
+                    b.ToTable("GameReplays", (string)null);
+                });
+
             modelBuilder.Entity("Dingler.Data.Entities.GameData.MatchType", b =>
                 {
                     b.Property<int>("Id")
@@ -338,6 +398,35 @@ namespace Dingler.Data.Migrations.GameData
                             Id = 5,
                             Name = "Cosmic"
                         });
+                });
+
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.ReplayEvent", b =>
+                {
+                    b.Property<ulong>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Data")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<int>("EventClass")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong>("GameReplayId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong>("PlayerUid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("TimeMs")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GameReplayId");
+
+                    b.ToTable("ReplayEvents", (string)null);
                 });
 
             modelBuilder.Entity("Dingler.Data.Entities.GameData.Siege", b =>
@@ -673,6 +762,17 @@ namespace Dingler.Data.Migrations.GameData
                     b.Navigation("Rank");
                 });
 
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.ReplayEvent", b =>
+                {
+                    b.HasOne("Dingler.Data.Entities.GameData.GameReplay", "GameReplay")
+                        .WithMany("Events")
+                        .HasForeignKey("GameReplayId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("GameReplay");
+                });
+
             modelBuilder.Entity("Dingler.Data.Entities.GameData.Siege", b =>
                 {
                     b.HasOne("Dingler.Data.Entities.GameData.PlayerProfile", "PlayerProfile")
@@ -743,6 +843,11 @@ namespace Dingler.Data.Migrations.GameData
             modelBuilder.Entity("Dingler.Data.Entities.GameData.FriendStatus", b =>
                 {
                     b.Navigation("Friends");
+                });
+
+            modelBuilder.Entity("Dingler.Data.Entities.GameData.GameReplay", b =>
+                {
+                    b.Navigation("Events");
                 });
 
             modelBuilder.Entity("Dingler.Data.Entities.GameData.MatchType", b =>

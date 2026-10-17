@@ -143,10 +143,30 @@ public sealed class SiegeRepository : BaseRepository<GameDataContext>
 	}
 
 	/// <summary>
-	/// Ends an attack that beat all 3 fights: the defense is DEFEATED and closed, and the DEFEATED row is logged. Returns
-	/// null if the defense isn't INGAME. The returned defense's Pot is the bounty the attacker won.
+	/// Logs a fight the attacker won (a SACKED row: the deck of that fight lost) while the attack goes on. Returns false
+	/// if the defense isn't INGAME. The client counts these rows as the deck's losses on its results screen.
 	/// </summary>
-	public Task<Siege?> EndAttackDefeatedAsync(ulong siegeId, SiegeLedger defeated)
+	public Task<bool> LogFightLostAsync(ulong siegeId, SiegeLedger sacked)
+	{
+		return EnqueueWriteAsync<bool>(async context =>
+		{
+			var siege = await context.Sieges.FindAsync(siegeId).ConfigureAwait(false);
+			if (siege is null || siege.Status != SiegeStatus.InGame)
+				return false;
+
+			sacked.Wins = siege.Wins;
+			sacked.Siege = siege;
+			context.SiegeLedger.Add(sacked);
+			return true;
+		});
+	}
+
+	/// <summary>
+	/// Ends an attack that beat all 3 fights: the defense is DEFEATED and closed, and the last fight's SACKED row and the
+	/// DEFEATED row are logged, in that order. Returns null if the defense isn't INGAME. The returned defense's Pot is the
+	/// bounty the attacker won.
+	/// </summary>
+	public Task<Siege?> EndAttackDefeatedAsync(ulong siegeId, SiegeLedger sacked, SiegeLedger defeated)
 	{
 		return EnqueueWriteAsync<Siege?>(async context =>
 		{
@@ -154,6 +174,9 @@ public sealed class SiegeRepository : BaseRepository<GameDataContext>
 			if (siege is null || siege.Status != SiegeStatus.InGame)
 				return null;
 
+			sacked.Wins = siege.Wins;
+			sacked.Siege = siege;
+			context.SiegeLedger.Add(sacked);
 			defeated.Wins = siege.Wins;
 			siege.Status = SiegeStatus.Defeated;
 			siege.StatusDate = defeated.Created;

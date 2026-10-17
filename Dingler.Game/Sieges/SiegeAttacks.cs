@@ -17,6 +17,9 @@ public sealed class SiegeAttacks
 		public required ulong AttackerId { get; init; }
 		public required string AttackerName { get; init; }
 
+		/// <summary>The defender's name when the attack started (for replays).</summary>
+		public string DefenderName { get; init; } = "";
+
 		/// <summary>The attacker's deck exactly as the client sent it with the challenge.</summary>
 		public required JsonElement Deck { get; init; }
 

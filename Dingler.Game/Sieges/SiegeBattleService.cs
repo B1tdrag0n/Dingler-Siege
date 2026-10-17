@@ -5,6 +5,7 @@ using Dingler.Data.Enums;
 using Dingler.Data.Repositories;
 using Dingler.Game.Arena;
 using Dingler.Game.Games;
+using Dingler.Game.Replays;
 using Dingler.Server;
 using HexGame::Game.Shared;
 using HexGame::Game.Shared.Domain;
@@ -41,6 +42,7 @@ public sealed class SiegeBattleService
 		public required UID Human { get; init; }
 		public required UID Ai { get; init; }
 		public required SessionState State { get; init; }
+		public required ReplayRecorder Recorder { get; init; }
 		public HexGameWrapper? Game { get; set; }
 		public int Applied;
 	}
@@ -172,6 +174,7 @@ public sealed class SiegeBattleService
 			Human = ArenaBattleService.HumanId(context),
 			Ai = new UID(UID.Type.ServiceAI, pending.GameId),
 			State = pending.State,
+			Recorder = new ReplayRecorder(),
 		};
 		var profileId = context.ProfileId;
 
@@ -181,7 +184,8 @@ public sealed class SiegeBattleService
 		{
 			active.Game = games.CreateArenaGame(pending.GameId, pending.State.SessionName, pending.State.EncounterData,
 				active.Human, humanDeck, context.UserName!, selfStops, opponentStops, active.Ai, ResourceId.Invalid,
-				new List<EncounterModBase>(), (engine, winners, _) => OnGameEnded(profileId, active, engine, winners), aiDeck);
+				new List<EncounterModBase>(), (engine, winners, _) => OnGameEnded(profileId, active, engine, winners), aiDeck,
+				active.Recorder);
 		}
 		catch (Exception ex)
 		{
@@ -269,23 +273,93 @@ public sealed class SiegeBattleService
 			attack.AttackerName, voided ? "had a void game in" : won ? "won" : "lost", game.Seq + 1, attack.SiegeId,
 			engine.m_TotalTurnsTaken, engine.AiSeat?.Summary() ?? "no AI seat");
 
+		// The game's end event has gone out by now, so the recording is complete. A void fight is played again; only
+		// fights that counted are kept.
+		var events = game.Recorder.TakeEvents();
+		var replay = voided ? null : NewReplay(game, engine, winners, events);
+
+		// The result first, so the replay can point at the fight's events log row, where the client shows its watch
+		// button. Building and saving the replay doesn't hold up the next fight's countdown.
 		_ = Task.Run(async () =>
 		{
+			ulong? logId = null;
 			try
 			{
-				await ApplyResultAsync(attack, game.Seq, voided, won, engine.VoidReason);
+				logId = await ApplyResultAsync(attack, game.Seq, voided, won, engine.VoidReason);
 			}
 			catch (Exception ex)
 			{
 				_logger?.LogError(ex, "Siege: applying fight {seq} of the attack on defense {id} failed", game.Seq + 1, attack.SiegeId);
 			}
+
+			if (replay is not null)
+				await SaveReplayAsync(game, replay, events, logId);
 		});
 	}
 
-	private async Task ApplyResultAsync(SiegeAttacks.Attack attack, int seq, bool voided, bool won, string? voidReason)
+	private static GameReplay NewReplay(ActiveGame game, HexRulesEngine engine, List<UID> winners, List<ReplayEvent> events)
+	{
+		var attack = game.Attack;
+		return new GameReplay
+		{
+			SessionUid = engine.m_SessionId.ToUInt64(),
+			GameId = engine.m_SessionId.GetInstanceId(),
+			SessionName = game.State.SessionName,
+			SiegeId = attack.SiegeId,
+			FightSeq = game.Seq,
+			Player1Uid = game.Human.ToUInt64(),
+			Player1Name = attack.AttackerName,
+			Player2Uid = game.Ai.ToUInt64(),
+			Player2Name = attack.DefenderName,
+			WinnerUid = winners.Count > 0 ? winners[0].ToUInt64() : 0,
+			Started = game.Recorder.Started,
+			Ended = DateTime.UtcNow,
+			EventCount = events.Count,
+			Events = events,
+		};
+	}
+
+	private async Task SaveReplayAsync(ActiveGame game, GameReplay replay, List<ReplayEvent> events, ulong? logId)
+	{
+		var attack = game.Attack;
+		replay.SiegeLedgerId = logId;
+
+		ReplayBuilder.Result? file = null;
+		try
+		{
+			file = ReplayBuilder.Build(replay, events, (uint)game.State.EncounterData.SessionFlags,
+				ToDeckTemplate(attack.Deck), ToDeckTemplate(attack.Fights[game.Seq].GetProperty("Deck")));
+			replay.ReplayFile = file.File;
+		}
+		catch (Exception ex)
+		{
+			_logger?.LogError(ex, "Replay: building the file for fight {seq} on defense {id} failed; its events are kept",
+				game.Seq + 1, attack.SiegeId);
+		}
+
+		try
+		{
+			using var scope = _scopes.CreateScope();
+			var saved = await scope.ServiceProvider.GetRequiredService<ReplayRepository>().AddAsync(replay);
+			_logger?.LogInformation("Replay: recorded {count} events of fight {seq} on defense {id} (replay {replay}, log row {log}){truncated}",
+				events.Count, game.Seq + 1, attack.SiegeId, saved.Id, logId?.ToString() ?? "none",
+				game.Recorder.Truncated ? ", cut short at the event limit" : "");
+			if (file is not null)
+				_logger?.LogInformation("Replay: file for replay {replay} is {bytes} bytes: {written} events in {generations} groups{skipped}",
+					saved.Id, file.File.Length, file.Events, file.Generations,
+					file.Skipped > 0 ? $", {file.Skipped} events unreadable and left out" : "");
+		}
+		catch (Exception ex)
+		{
+			_logger?.LogError(ex, "Replay: saving fight {seq} on defense {id} failed", game.Seq + 1, attack.SiegeId);
+		}
+	}
+
+	// Returns the fight's events log row (SACKED or DEFENDED), or null if the fight got none (void, or forfeited meanwhile).
+	private async Task<ulong?> ApplyResultAsync(SiegeAttacks.Attack attack, int seq, bool voided, bool won, string? voidReason)
 	{
 		if (!_attacks.TryGetBySiege(attack.SiegeId, out var current) || current != attack || attack.Seq != seq)
-			return;   // forfeited meanwhile
+			return null;   // forfeited meanwhile
 
 		using var scope = _scopes.CreateScope();
 		var sieges = scope.ServiceProvider.GetRequiredService<SiegeRepository>();
@@ -296,13 +370,13 @@ public sealed class SiegeBattleService
 			_logger?.LogWarning("Siege: fight {seq} on defense {id} voided ({reason}); it will be replayed", seq + 1,
 				attack.SiegeId, voidReason ?? "no winner");
 			CountdownAfterGame(attack);
-			return;
+			return null;
 		}
 
 		if (!won)
 		{
 			if (!_attacks.Remove(attack))
-				return;
+				return null;
 			var now = Now();
 			var defendedRow = new SiegeLedger
 			{
@@ -316,21 +390,34 @@ public sealed class SiegeBattleService
 			_logger?.LogInformation("Siege: {defender}'s defense {id} held against {user} at fight {seq}",
 				defended?.PlayerName, attack.SiegeId, attack.AttackerName, seq + 1);
 			// The client's end-of-game Continue opens the attack's results from the last "siege:saction" it got.
-			if (defended is not null)
-				attack.Session.TrySendMessageToClient(ActionEvent(defendedRow));
-			return;
+			if (defended is null)
+				return null;
+			attack.Session.TrySendMessageToClient(ActionEvent(defendedRow));
+			return defendedRow.Id;
 		}
+
+		// The fight's deck lost: a SACKED row, like the original server's. It isn't sent to the attacker: their client
+		// would take it as the attack's result (see above).
+		var sackedRow = new SiegeLedger
+		{
+			Action = SiegeAction.Sacked,
+			FightSeq = seq,
+			PlayerProfileId = attack.AttackerId,
+			PlayerName = attack.AttackerName,
+			Created = Now()
+		};
 
 		attack.Seq = seq + 1;
 		if (attack.Seq < FightsPerDefense)
 		{
+			var logged = await sieges.LogFightLostAsync(attack.SiegeId, sackedRow);
 			CountdownAfterGame(attack);
-			return;
+			return logged ? sackedRow.Id : null;
 		}
 
 		// All 3 won: the defense falls and its bounty goes to the attacker.
 		if (!_attacks.Remove(attack))
-			return;
+			return null;
 		var defeatedRow = new SiegeLedger
 		{
 			Action = SiegeAction.Defeated,
@@ -338,14 +425,14 @@ public sealed class SiegeBattleService
 			PlayerProfileId = attack.AttackerId,
 			PlayerName = attack.AttackerName,
 			Escrow = SiegeEscrow.Funded,
-			Created = Now()
+			Created = sackedRow.Created
 		};
-		var defeated = await sieges.EndAttackDefeatedAsync(attack.SiegeId, defeatedRow);
+		var defeated = await sieges.EndAttackDefeatedAsync(attack.SiegeId, sackedRow, defeatedRow);
 		if (defeated is null)
 		{
 			_logger?.LogWarning("Siege: {user} won defense {id}, but it was no longer under attack; no bounty paid",
 				attack.AttackerName, attack.SiegeId);
-			return;
+			return null;
 		}
 
 		_payments.PayBounty(attack.AttackerId, defeated.Currency, defeated.Pot);
@@ -353,6 +440,7 @@ public sealed class SiegeBattleService
 		attack.Session.TrySendMessageToClient(ActionEvent(defeatedRow));
 		_logger?.LogInformation("Siege: {user} defeated {defender}'s defense {id} and won {pot} {currency}",
 			attack.AttackerName, defeated.PlayerName, defeated.Id, defeated.Pot, defeated.Currency);
+		return sackedRow.Id;
 	}
 
 	// The next fight's countdown. The client only takes it while it is still in the game: there the event moves it to
