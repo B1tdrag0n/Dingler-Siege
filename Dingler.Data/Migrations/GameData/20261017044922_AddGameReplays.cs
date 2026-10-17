@@ -22,6 +22,7 @@ namespace Dingler.Data.Migrations.GameData
                     SessionName = table.Column<string>(type: "TEXT", nullable: false),
                     SiegeId = table.Column<ulong>(type: "INTEGER", nullable: true),
                     FightSeq = table.Column<int>(type: "INTEGER", nullable: false),
+                    SiegeLedgerId = table.Column<ulong>(type: "INTEGER", nullable: true),
                     Player1Uid = table.Column<ulong>(type: "INTEGER", nullable: false),
                     Player1Name = table.Column<string>(type: "TEXT", nullable: false),
                     Player2Uid = table.Column<ulong>(type: "INTEGER", nullable: false),
@@ -29,7 +30,8 @@ namespace Dingler.Data.Migrations.GameData
                     WinnerUid = table.Column<ulong>(type: "INTEGER", nullable: false),
                     Started = table.Column<DateTime>(type: "TEXT", nullable: false),
                     Ended = table.Column<DateTime>(type: "TEXT", nullable: false),
-                    EventCount = table.Column<int>(type: "INTEGER", nullable: false)
+                    EventCount = table.Column<int>(type: "INTEGER", nullable: false),
+                    ReplayFile = table.Column<byte[]>(type: "BLOB", nullable: true)
                 },
                 constraints: table =>
                 {
