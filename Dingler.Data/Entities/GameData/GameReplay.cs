@@ -40,5 +40,11 @@ public class GameReplay
 
     public int EventCount { get; set; }
 
+    /// <summary>
+    /// The .replay file the client's viewer plays (the client's own GameEventLog format), built from Events when the
+    /// game is saved. Null if building it failed; the events are kept either way.
+    /// </summary>
+    public byte[]? ReplayFile { get; set; }
+
     public virtual List<ReplayEvent> Events { get; set; } = [];
 }

@@ -198,11 +198,14 @@ public static class SiegeWire
 	// A deck as the client sent it (a ProfileDeckTemplate) as the deck_bits a game loads, through the client's own
 	// conversion: champion, equipment, cards with their gems, and the AI personality. The client's JSON reader can read
 	// it here (only its writer needs Unity).
-	public static deck_bits ToDeckBits(JsonElement deck)
+	public static deck_bits ToDeckBits(JsonElement deck) => ToDeckTemplate(deck).AsFakeDeck();
+
+	/// <summary>A deck as the client sent it, read into the client's own ProfileDeckTemplate.</summary>
+	public static ProfileDeckTemplate ToDeckTemplate(JsonElement deck)
 	{
 		ProfileDeckTemplate? template = null;
 		HexGame::Game.Shared.Network.HConnect.Utils.DeserializeJson<ProfileDeckTemplate>(JsonSerializer.SerializeToUtf8Bytes(deck),
 			t => template = t);
-		return template?.AsFakeDeck() ?? throw new JsonException("The deck couldn't be read.");
+		return template ?? throw new JsonException("The deck couldn't be read.");
 	}
 }

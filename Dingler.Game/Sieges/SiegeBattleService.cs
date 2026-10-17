@@ -305,6 +305,7 @@ public sealed class SiegeBattleService
 			Player1Uid = game.Human.ToUInt64(),
 			Player1Name = attack.AttackerName,
 			Player2Uid = game.Ai.ToUInt64(),
+			Player2Name = attack.DefenderName,
 			WinnerUid = winners.Count > 0 ? winners[0].ToUInt64() : 0,
 			Started = game.Recorder.Started,
 			Ended = DateTime.UtcNow,
@@ -312,8 +313,23 @@ public sealed class SiegeBattleService
 			Events = events,
 		};
 
+		var flags = (uint)game.State.EncounterData.SessionFlags;
+
 		_ = Task.Run(async () =>
 		{
+			ReplayBuilder.Result? file = null;
+			try
+			{
+				file = ReplayBuilder.Build(replay, events, flags, ToDeckTemplate(attack.Deck),
+					ToDeckTemplate(attack.Fights[game.Seq].GetProperty("Deck")));
+				replay.ReplayFile = file.File;
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogError(ex, "Replay: building the file for fight {seq} on defense {id} failed; its events are kept",
+					game.Seq + 1, attack.SiegeId);
+			}
+
 			try
 			{
 				using var scope = _scopes.CreateScope();
@@ -321,6 +337,10 @@ public sealed class SiegeBattleService
 				_logger?.LogInformation("Replay: recorded {count} events of fight {seq} on defense {id} (replay {replay}){truncated}",
 					events.Count, game.Seq + 1, attack.SiegeId, saved.Id,
 					game.Recorder.Truncated ? ", cut short at the event limit" : "");
+				if (file is not null)
+					_logger?.LogInformation("Replay: file for replay {replay} is {bytes} bytes: {written} events in {generations} groups{skipped}",
+						saved.Id, file.File.Length, file.Events, file.Generations,
+						file.Skipped > 0 ? $", {file.Skipped} events unreadable and left out" : "");
 			}
 			catch (Exception ex)
 			{

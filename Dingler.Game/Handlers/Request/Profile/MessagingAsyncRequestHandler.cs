@@ -248,6 +248,7 @@ public sealed class MessagingAsyncRequestHandler : IAsyncRequestHandler<Messagin
 			SiegeId = defense.Id,
 			AttackerId = context.ProfileId,
 			AttackerName = context.UserName ?? "",
+			DefenderName = defense.PlayerName,
 			Deck = request.Deck!.Value.Clone(),
 			Fights = UnpackFights(defense.FightInfo),
 			Session = context

@@ -256,6 +256,9 @@ namespace Dingler.Data.Migrations.GameData
                     b.Property<ulong>("Player2Uid")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte[]>("ReplayFile")
+                        .HasColumnType("BLOB");
+
                     b.Property<string>("SessionName")
                         .IsRequired()
                         .HasColumnType("TEXT");
