@@ -5,6 +5,7 @@ using Dingler.Data.Enums;
 using Dingler.Data.Repositories;
 using Dingler.Game.Arena;
 using Dingler.Game.Games;
+using Dingler.Game.Replays;
 using Dingler.Server;
 using HexGame::Game.Shared;
 using HexGame::Game.Shared.Domain;
@@ -41,6 +42,7 @@ public sealed class SiegeBattleService
 		public required UID Human { get; init; }
 		public required UID Ai { get; init; }
 		public required SessionState State { get; init; }
+		public required ReplayRecorder Recorder { get; init; }
 		public HexGameWrapper? Game { get; set; }
 		public int Applied;
 	}
@@ -172,6 +174,7 @@ public sealed class SiegeBattleService
 			Human = ArenaBattleService.HumanId(context),
 			Ai = new UID(UID.Type.ServiceAI, pending.GameId),
 			State = pending.State,
+			Recorder = new ReplayRecorder(),
 		};
 		var profileId = context.ProfileId;
 
@@ -181,7 +184,8 @@ public sealed class SiegeBattleService
 		{
 			active.Game = games.CreateArenaGame(pending.GameId, pending.State.SessionName, pending.State.EncounterData,
 				active.Human, humanDeck, context.UserName!, selfStops, opponentStops, active.Ai, ResourceId.Invalid,
-				new List<EncounterModBase>(), (engine, winners, _) => OnGameEnded(profileId, active, engine, winners), aiDeck);
+				new List<EncounterModBase>(), (engine, winners, _) => OnGameEnded(profileId, active, engine, winners), aiDeck,
+				active.Recorder);
 		}
 		catch (Exception ex)
 		{
@@ -269,6 +273,12 @@ public sealed class SiegeBattleService
 			attack.AttackerName, voided ? "had a void game in" : won ? "won" : "lost", game.Seq + 1, attack.SiegeId,
 			engine.m_TotalTurnsTaken, engine.AiSeat?.Summary() ?? "no AI seat");
 
+		// The game's end event has gone out by now, so the recording is complete. A void fight is played again; only
+		// fights that counted are kept.
+		var events = game.Recorder.TakeEvents();
+		if (!voided)
+			SaveReplay(game, engine, winners, events);
+
 		_ = Task.Run(async () =>
 		{
 			try
@@ -278,6 +288,43 @@ public sealed class SiegeBattleService
 			catch (Exception ex)
 			{
 				_logger?.LogError(ex, "Siege: applying fight {seq} of the attack on defense {id} failed", game.Seq + 1, attack.SiegeId);
+			}
+		});
+	}
+
+	private void SaveReplay(ActiveGame game, HexRulesEngine engine, List<UID> winners, List<ReplayEvent> events)
+	{
+		var attack = game.Attack;
+		var replay = new GameReplay
+		{
+			SessionUid = engine.m_SessionId.ToUInt64(),
+			GameId = engine.m_SessionId.GetInstanceId(),
+			SessionName = game.State.SessionName,
+			SiegeId = attack.SiegeId,
+			FightSeq = game.Seq,
+			Player1Uid = game.Human.ToUInt64(),
+			Player1Name = attack.AttackerName,
+			Player2Uid = game.Ai.ToUInt64(),
+			WinnerUid = winners.Count > 0 ? winners[0].ToUInt64() : 0,
+			Started = game.Recorder.Started,
+			Ended = DateTime.UtcNow,
+			EventCount = events.Count,
+			Events = events,
+		};
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				using var scope = _scopes.CreateScope();
+				var saved = await scope.ServiceProvider.GetRequiredService<ReplayRepository>().AddAsync(replay);
+				_logger?.LogInformation("Replay: recorded {count} events of fight {seq} on defense {id} (replay {replay}){truncated}",
+					events.Count, game.Seq + 1, attack.SiegeId, saved.Id,
+					game.Recorder.Truncated ? ", cut short at the event limit" : "");
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogError(ex, "Replay: saving fight {seq} on defense {id} failed", game.Seq + 1, attack.SiegeId);
 			}
 		});
 	}

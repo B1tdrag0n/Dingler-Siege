@@ -27,6 +27,10 @@ public partial class GameDataContext : DbContext
 
     public virtual DbSet<SiegeLedger> SiegeLedger { get; set; }
 
+    public virtual DbSet<GameReplay> GameReplays { get; set; }
+
+    public virtual DbSet<ReplayEvent> ReplayEvents { get; set; }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         if (!optionsBuilder.IsConfigured)
@@ -266,6 +270,23 @@ public partial class GameDataContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.PlayerProfileId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<GameReplay>(entity =>
+        {
+            entity.ToTable("GameReplays");
+
+            entity.HasIndex(e => e.SiegeId, "IX_GameReplays_SiegeId");
+        });
+
+        modelBuilder.Entity<ReplayEvent>(entity =>
+        {
+            entity.ToTable("ReplayEvents");
+
+            entity.HasOne(e => e.GameReplay)
+                .WithMany(r => r.Events)
+                .HasForeignKey(e => e.GameReplayId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         OnModelCreatingPartial(modelBuilder);

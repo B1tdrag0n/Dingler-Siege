@@ -101,6 +101,7 @@ namespace Dingler.Game.CompositionRoot
                     .AddScoped<PlayerProfileRepository>()
                     .AddScoped<FriendRepository>()
                     .AddScoped<SiegeRepository>()
+                    .AddScoped<ReplayRepository>()
                     .AddScoped<DeckService>()
                     .AddScoped<Dingler.Game.DeckImport.DeckImportService>()
                     .AddScoped<GameManager>()

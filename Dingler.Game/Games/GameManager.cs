@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using Dingler.Server;
 using Dingler.Game.Cards;
 using Dingler.Game.GameObjects;
+using Dingler.Game.Replays;
 using Dingler.Game.Tournaments;
 using HexGame::Game.Shared;
 using HexGame::Game.Shared.Domain;
@@ -137,17 +138,18 @@ public sealed class GameManager : IDisposable
 	/// started here, on the calling thread, before its engine pump runs; the pump starts at once and waits until the
 	/// player says they're ready (ReadyToStartGame). Clocks per design 03 D17-A.
 	/// Siege fights use it too (session flag IsSiege): the AI then plays a player's deck, given as aiDeck instead of
-	/// aiDeckTemplateId, and there are no battle mods.
+	/// aiDeckTemplateId, and there are no battle mods. A recorder, when given, records the game for a replay.
 	/// </summary>
 	public HexGameWrapper CreateArenaGame(ulong gameId, string sessionName, SessionStateEncounterData encounterData,
 		UID humanId, deck_bits humanDeck, string userName, List<ETurnPhases>? selfStops, List<ETurnPhases>? opponentStops,
 		UID aiId, ResourceId aiDeckTemplateId, List<EncounterModBase> battleMods,
-		Action<HexRulesEngine, List<UID>, List<UID>> onGameEnded, deck_bits? aiDeck = null)
+		Action<HexRulesEngine, List<UID>, List<UID>> onGameEnded, deck_bits? aiDeck = null, ReplayRecorder? recorder = null)
 	{
 		var engine = new HexRulesEngine(sessionName, new UID(UID.Type.AuthoritativeSession, gameId),
 			_loggerFactory?.CreateLogger<HexRulesEngine>())
 		{
 			m_EncounterData = encounterData,
+			Recorder = recorder,
 			ForcedFirstPlayer = UID.Invalid,   // the engine's coin flip decides who starts
 			ArenaMods = battleMods,
 		};
