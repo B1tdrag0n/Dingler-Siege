@@ -55,7 +55,9 @@ public sealed class SiegeBattleService
 	private readonly ConcurrentDictionary<ulong, PendingGame> _pending = new();   // by attacker profile id
 	private readonly ConcurrentDictionary<ulong, ActiveGame> _active = new();     // by attacker profile id
 
-	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(5);
+	// Kept short on purpose: a Continue click on the end-of-game banner before the countdown arrives opens the client's
+	// attack results splash (VICTORY or DEFEAT from the last "siege:saction"), which is wrong between fights.
+	private static readonly TimeSpan EndScreenPause = TimeSpan.FromSeconds(2);
 
 	public SiegeBattleService(SiegeAttacks attacks, SiegePayments payments, IServiceScopeFactory scopes,
 		ILogger<SiegeBattleService>? logger = null)
@@ -369,6 +371,7 @@ public sealed class SiegeBattleService
 	// The next fight's countdown. The client only takes it while it is still in the game: there the event moves it to
 	// a fresh assault screen; on the assault screen itself it can't be shown again (UISiege allows no Attack -> Attack
 	// transition). So it goes out shortly after the game ends, leaving the end-of-game banner on screen for a moment.
+	// If the attacker clicks Continue first, UIBattle.Quit opens the results splash instead; the server can't prevent that.
 	private void CountdownAfterGame(SiegeAttacks.Attack attack)
 	{
 		_ = Task.Run(async () =>
