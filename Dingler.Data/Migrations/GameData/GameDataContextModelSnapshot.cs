@@ -269,6 +269,9 @@ namespace Dingler.Data.Migrations.GameData
                     b.Property<ulong?>("SiegeId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<ulong?>("SiegeLedgerId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime>("Started")
                         .HasColumnType("TEXT");
 

@@ -22,6 +22,12 @@ public class GameReplay
     /// <summary>Which of the defense's 3 fights this was (0-based), for Siege fights.</summary>
     public int FightSeq { get; set; }
 
+    /// <summary>
+    /// The defense's events log row for this fight (SACKED if the attacker won it, DEFENDED if not), where the client
+    /// shows the watch button. Null when the fight has no row, e.g. a fight conceded by a forfeit.
+    /// </summary>
+    public ulong? SiegeLedgerId { get; set; }
+
     // The two seats (UID.ToUInt64()). Player 1 is the human, whose view a replay opens on.
     public ulong Player1Uid { get; set; }
 
